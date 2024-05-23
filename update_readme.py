@@ -13,13 +13,22 @@ excluded_files = ["update-readme.yml"]
 start_marker = "<!-- SCRIPTS_START -->"
 end_marker = "<!-- SCRIPTS_END -->"
 
+# Get list of files in the directory, excluding specified files
+file_list = [
+    file
+    for file in os.listdir(files_dir)
+    if file not in excluded_files and os.path.isfile(os.path.join(files_dir, file))
+]
+
+# Sort the list alphabetically
+file_list.sort()
+
+# Print the list of files
+print(f"Files to add to README: {file_list}")
+
 # Generate the list of files as Markdown links
-file_list = "\n".join(
-    [
-        f"- [{file}]({files_dir}/{file})"
-        for file in os.listdir(files_dir)
-        if os.path.isfile(os.path.join(files_dir, file) and file not in excluded_files)
-    ]
+file_list_markdown = "\n".join(
+    [f"- [{file}]({files_dir}/{file})" for file in file_list]
 )
 
 # Read the current README file
@@ -38,7 +47,7 @@ if start_index == -1 or end_index == -1:
 new_readme_contents = (
     readme_contents[: start_index + len(start_marker)]
     + "\n"
-    + file_list
+    + file_list_markdown
     + "\n"
     + readme_contents[end_index:]
 )
