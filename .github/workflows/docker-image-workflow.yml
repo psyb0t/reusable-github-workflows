@@ -51,8 +51,8 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ inputs.dockerhub_username }}
-          password: ${{ inputs.dockerhub_token }}
+          username: ${{ secrets.dockerhub_username }}
+          password: ${{ secrets.dockerhub_token }}
 
       - name: Create Buildx builder
         run: |
@@ -86,6 +86,6 @@ jobs:
       - name: Docker Hub Description
         uses: peter-evans/dockerhub-description@v4
         with:
-          username: ${{ inputs.dockerhub_username }}
-          password: ${{ inputs.dockerhub_token }}
+          username: ${{ secrets.dockerhub_username }}
+          password: ${{ secrets.dockerhub_token }}
           repository: ${{ inputs.repository_name }}
