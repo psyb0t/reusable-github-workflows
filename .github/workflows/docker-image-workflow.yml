@@ -1,0 +1,91 @@
+name: Docker Image Workflow
+
+on:
+  workflow_call:
+    inputs:
+      repository_name:
+        description: "Docker repository name"
+        required: true
+        type: string
+
+      target_platforms:
+        description: "Target platforms"
+        required: true
+        type: string
+        default: "linux/amd64,linux/arm64"
+
+    secrets:
+      dockerhub_username:
+        description: "Docker Hub username"
+        required: true
+
+      dockerhub_token:
+        description: "Docker Hub token"
+        required: true
+
+jobs:
+  release:
+    if: contains(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+
+  push-to-dockerhub:
+    if: github.ref == 'refs/heads/master' || contains(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ inputs.dockerhub_username }}
+          password: ${{ inputs.dockerhub_token }}
+
+      - name: Create Buildx builder
+        run: |
+          docker buildx create --use --name mybuilder
+          docker buildx inspect mybuilder --bootstrap
+
+      - name: Build and Push (latest)
+        if: github.ref == 'refs/heads/master'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: ${{ inputs.target_platforms }}
+          tags: ${{ inputs.repository_name }}:latest
+
+      - name: Get Release Version
+        if: contains(github.ref, 'refs/tags/')
+        run: |
+          RELEASE_VERSION=${GITHUB_REF#refs/*/}
+          echo "RELEASE_VERSION=$RELEASE_VERSION" >> $GITHUB_ENV
+
+      - name: Build and Push New Release
+        if: contains(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ inputs.repository_name }}:${{env.RELEASE_VERSION}}
+
+      - name: Docker Hub Description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ inputs.dockerhub_username }}
+          password: ${{ inputs.dockerhub_token }}
+          repository: ${{ inputs.repository_name }}
