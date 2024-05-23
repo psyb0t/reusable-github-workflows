@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       repository_name:
-        description: "Docker repository name test"
+        description: "Docker repository name"
         required: true
         type: string
 

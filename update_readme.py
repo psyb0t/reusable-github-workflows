@@ -6,6 +6,9 @@ files_dir = ".github/workflows"
 # Path to the README file
 readme_path = "README.md"
 
+# Excluded files
+excluded_files = ["update-readme.yml"]
+
 # Marker to indicate where to insert the file list in the README
 start_marker = "<!-- SCRIPTS_START -->"
 end_marker = "<!-- SCRIPTS_END -->"
@@ -15,7 +18,7 @@ file_list = "\n".join(
     [
         f"- [{file}]({files_dir}/{file})"
         for file in os.listdir(files_dir)
-        if os.path.isfile(os.path.join(files_dir, file))
+        if os.path.isfile(os.path.join(files_dir, file) and file not in excluded_files)
     ]
 )
 
