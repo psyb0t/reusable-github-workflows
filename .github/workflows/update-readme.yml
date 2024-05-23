@@ -3,9 +3,7 @@ name: Update README
 on:
   push:
     paths:
-      - "scripts/**"
-  schedule:
-    - cron: "0 0 * * *" # Runs daily
+      - ".github/workflows/**"
 
 jobs:
   update-readme:
