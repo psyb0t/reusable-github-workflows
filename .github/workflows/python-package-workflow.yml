@@ -27,6 +27,11 @@ on:
         default: "dist"
         type: string
 
+    secrets:
+      pypi_api_token:
+        description: "PyPI token"
+        required: true
+
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -79,6 +84,9 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.pypi_api_token }}
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
