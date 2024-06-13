@@ -21,11 +21,6 @@ on:
         default: "make build"
         type: string
 
-    secrets:
-      github_token:
-        description: "GitHub token for creating releases"
-        required: true
-
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -102,5 +97,3 @@ jobs:
         with:
           draft: false
           files: dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.github_token }}
