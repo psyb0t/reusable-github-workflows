@@ -32,7 +32,7 @@ jobs:
         run: |
           CACHE_KEY="dist-${{ github.run_number }}"
           echo "CACHE_KEY=${CACHE_KEY}" >> $GITHUB_ENV
-          echo "Cache key set to ${CACHE_KEY}"
+          echo "Cache key set to ${{ env.CACHE_KEY }}"
 
   build:
     runs-on: ubuntu-latest
