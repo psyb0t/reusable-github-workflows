@@ -31,11 +31,11 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      cache_key: ${{ steps.set_cache_key.outputs.key }}
+      cache-key: ${{ steps.set_cache_key.outputs.CACHE_KEY }}
     steps:
       - name: Set cache key
         id: set_cache_key
-        run: echo "dist-${{ github.run_number }}" >> $GITHUB_OUTPUT
+        run: echo "CACHE_KEY=dist-${{ github.run_number }}" >> $GITHUB_OUTPUT
 
   build:
     runs-on: ubuntu-latest
@@ -59,7 +59,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ inputs.dist_dir }}
-          key: ${{ needs.setup.outputs.cache_key }}
+          key: ${{ needs.setup.outputs.cache-key }}
 
   pypi-publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ inputs.dist_dir }}
-          key: ${{ needs.setup.outputs.cache_key }}
+          key: ${{ needs.setup.outputs.cache-key }}
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -93,7 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ inputs.dist_dir }}
-          key: ${{ needs.setup.outputs.cache_key }}
+          key: ${{ needs.setup.outputs.cache-key }}
 
       - name: Release
         uses: softprops/action-gh-release@v2
