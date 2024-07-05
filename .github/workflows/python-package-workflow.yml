@@ -8,37 +8,41 @@ on:
         required: false
         default: "3.12.0"
         type: string
-
       install_dependencies_command:
         description: "Command to install dependencies"
         required: false
         default: "make dep"
         type: string
-
       test_command:
         description: "Command to run tests"
         required: false
         default: ""
         type: string
-
       build_command:
         description: "Command to build the package"
         required: false
         default: "make build"
         type: string
-
       dist_dir:
         description: "Dist directory"
         required: false
         default: "dist"
         type: string
-
       debug:
         description: "Debug workflow"
         required: false
         default: false
         type: boolean
-
+      enable_code_checks:
+        description: "Enable code checks"
+        required: false
+        default: true
+        type: boolean
+      code_checks:
+        description: "Code checks to run (comma-separated)"
+        required: false
+        default: "bandit,safety,pylint,pyt,flake8"
+        type: string
     secrets:
       pypi_api_token:
         description: "PyPI token"
@@ -64,44 +68,71 @@ jobs:
         id: set_cache_key
         run: echo "CACHE_KEY=dist-${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-  test:
+  code-checks:
     runs-on: ubuntu-latest
     needs: setup
-    if: inputs.test_command != ''
+    if: inputs.enable_code_checks
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ${{ fromJson(format('[{0}]', inputs.code_checks)) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit safety pylint python-taint flake8
+          ${{ inputs.install_dependencies_command }}
+      - name: Run ${{ matrix.check }}
+        run: |
+          if [ "${{ matrix.check }}" = "bandit" ]; then
+            bandit -r . -f custom --msg-template "{abspath}:{line}: {severity}: {test_id}: {msg}"
+          elif [ "${{ matrix.check }}" = "safety" ]; then
+            safety check
+          elif [ "${{ matrix.check }}" = "pylint" ]; then
+            pylint **/*.py
+          elif [ "${{ matrix.check }}" = "pyt" ]; then
+            pyt -f .
+          elif [ "${{ matrix.check }}" = "flake8" ]; then
+            flake8 .
+          fi
 
+  test:
+    runs-on: ubuntu-latest
+    needs: [setup, code-checks]
+    if: always() && inputs.test_command != '' && needs.setup.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
       - name: Install dependencies
         run: ${{ inputs.install_dependencies_command }}
-
       - name: Run tests
         run: ${{ inputs.test_command }}
 
   build:
     runs-on: ubuntu-latest
-    needs: [setup, test]
-    if: always() && needs.setup.result == 'success' && (inputs.test_command == '' || needs.test.result == 'success')
+    needs: [setup, test, code-checks]
+    if: always() && needs.setup.result == 'success' && (inputs.test_command == '' || needs.test.result == 'success') && (!inputs.enable_code_checks || needs.code-checks.result == 'success')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
-
       - name: Install dependencies
         run: ${{ inputs.install_dependencies_command }}
-
       - name: Build
         run: ${{ inputs.build_command }}
-
       - name: Cache the build artifacts
         uses: actions/cache@v4
         with:
@@ -117,13 +148,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Restore build artifacts
         uses: actions/cache@v4
         with:
           path: ${{ inputs.dist_dir }}
           key: ${{ needs.setup.outputs.cache-key }}
-
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -138,13 +167,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Restore build artifacts
         uses: actions/cache@v4
         with:
           path: ${{ inputs.dist_dir }}
           key: ${{ needs.setup.outputs.cache-key }}
-
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
