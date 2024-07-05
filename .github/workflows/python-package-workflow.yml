@@ -55,18 +55,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
+
       - name: Install dependencies
         run: ${{ inputs.install_dependencies_command }}
+
       - name: Run tests
         run: ${{ inputs.test_command }}
 
   build:
     runs-on: ubuntu-latest
     needs: [setup, test]
+    if: always() && (inputs.test_command == '' || needs.test.result == 'success')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
