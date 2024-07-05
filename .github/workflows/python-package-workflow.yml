@@ -33,6 +33,12 @@ on:
         default: "dist"
         type: string
 
+      debug:
+        description: "Debug workflow"
+        required: false
+        default: false
+        type: boolean
+
     secrets:
       pypi_api_token:
         description: "PyPI token"
@@ -41,6 +47,7 @@ on:
 jobs:
   debug-workflow:
     runs-on: ubuntu-latest
+    if: inputs.debug
     steps:
       - name: Debug GitHub context
         run: |
