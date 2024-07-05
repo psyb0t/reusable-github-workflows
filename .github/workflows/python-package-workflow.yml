@@ -39,6 +39,14 @@ on:
         required: true
 
 jobs:
+  debug-workflow:
+    steps:
+      - name: Debug GitHub context
+      run: |
+        echo "github.ref: ${{ github.ref }}"
+        echo "github.sha: ${{ github.sha }}"
+        echo "github.event_name: ${{ github.event_name }}"
+
   setup:
     runs-on: ubuntu-latest
     outputs:
