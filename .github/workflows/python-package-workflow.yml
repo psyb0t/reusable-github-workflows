@@ -39,9 +39,9 @@ on:
         default: true
         type: boolean
       code_checks:
-        description: "Code checks to run (comma-separated)"
+        description: "Code checks to run (JSON array)"
         required: false
-        default: "bandit,safety,pylint,pyt,flake8"
+        default: '["bandit", "safety", "pylint", "pyt", "flake8"]'
         type: string
     secrets:
       pypi_api_token:
@@ -75,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: ${{ fromJson(format('[{0}]', inputs.code_checks)) }}
+        check: ${{ fromJson(inputs.code_checks) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -86,7 +86,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install bandit safety pylint python-taint flake8
+          pip install ${{ matrix.check }}
           ${{ inputs.install_dependencies_command }}
       - name: Run ${{ matrix.check }}
         run: |
