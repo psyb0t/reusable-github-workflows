@@ -58,6 +58,8 @@ jobs:
           echo "github.ref: ${{ github.ref }}"
           echo "github.sha: ${{ github.sha }}"
           echo "github.event_name: ${{ github.event_name }}"
+          echo "github.run_number: ${{ github.run_number }}"
+          echo "github.run_attempt: ${{ github.run_attempt }}"
 
   setup:
     runs-on: ubuntu-latest
