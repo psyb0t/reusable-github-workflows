@@ -60,7 +60,7 @@ jobs:
           docker buildx inspect mybuilder --bootstrap
 
       - name: Build and Push (latest)
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v5
         with:
           context: .
