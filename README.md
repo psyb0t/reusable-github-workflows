@@ -5,6 +5,7 @@ Just some reusable github workflows.
 ## Workflows
 
 <!-- SCRIPTS_START -->
+
 - [docker-image-workflow.yml](.github/workflows/docker-image-workflow.yml)
 - [go-workflow.yml](.github/workflows/go-workflow.yml)
 - [python-package-workflow.yml](.github/workflows/python-package-workflow.yml)
@@ -50,4 +51,21 @@ jobs:
 
     secrets:
       pypi_api_token: ${{ secrets.PYPI_API_TOKEN }}
+```
+
+### go-workflow.yml
+
+```yaml
+name: pipeline
+
+on: [push]
+
+jobs:
+  call-go-workflow:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@master
+    with:
+      go_version: "1.24"
+      dep_command: "make dep"
+      lint_command: "make lint"
+      test_command: "make test"
 ```
