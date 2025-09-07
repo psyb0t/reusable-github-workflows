@@ -6,6 +6,7 @@ Just some reusable github workflows.
 
 <!-- SCRIPTS_START -->
 - [docker-image-workflow.yml](.github/workflows/docker-image-workflow.yml)
+- [go-workflow.yml](.github/workflows/go-workflow.yml)
 - [python-package-workflow.yml](.github/workflows/python-package-workflow.yml)
 <!-- SCRIPTS_END -->
 
