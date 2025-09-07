@@ -1,0 +1,217 @@
+name: Go Workflow
+
+on:
+  workflow_call:
+    inputs:
+      go_version:
+        description: "Go version to use"
+        required: false
+        default: "1.24"
+        type: string
+      test_command:
+        description: "Command to run tests"
+        required: false
+        default: "make test-coverage"
+        type: string
+      lint_command:
+        description: "Command to run linting"
+        required: false
+        default: "make lint"
+        type: string
+      dep_command:
+        description: "Command to download dependencies"
+        required: false
+        default: "make dep"
+        type: string
+      debug:
+        description: "Debug workflow"
+        required: false
+        default: false
+        type: boolean
+      coverage_threshold:
+        description: "Minimum test coverage percentage"
+        required: false
+        default: "80"
+        type: string
+    outputs:
+      cache-key:
+        description: "Cache key for artifacts"
+        value: ${{ jobs.setup.outputs.cache-key }}
+      coverage:
+        description: "Test coverage percentage"
+        value: ${{ jobs.test.outputs.coverage }}
+
+jobs:
+  debug-workflow:
+    name: Debug Info
+    runs-on: ubuntu-latest
+    if: inputs.debug
+    steps:
+      - name: Debug GitHub context
+        run: |
+          echo "::group::GitHub Context"
+          echo "github.ref: ${{ github.ref }}"
+          echo "github.ref_name: ${{ github.ref_name }}"
+          echo "github.sha: ${{ github.sha }}"
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "github.run_number: ${{ github.run_number }}"
+          echo "github.run_attempt: ${{ github.run_attempt }}"
+          echo "github.actor: ${{ github.actor }}"
+          echo "github.repository: ${{ github.repository }}"
+          echo "::endgroup::"
+
+          echo "::group::Inputs"
+          echo "go_version: ${{ inputs.go_version }}"
+          echo "test_command: ${{ inputs.test_command }}"
+          echo "lint_command: ${{ inputs.lint_command }}"
+          echo "dep_command: ${{ inputs.dep_command }}"
+          echo "coverage_threshold: ${{ inputs.coverage_threshold }}"
+          echo "::endgroup::"
+
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.set_cache_key.outputs.CACHE_KEY }}
+      go-cache: ${{ steps.go_cache.outputs.cache-hit }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set cache key
+        id: set_cache_key
+        run: |
+          echo "CACHE_KEY=go-pkg-${{ inputs.go_version }}-${{ github.run_number }}-${{ github.sha }}-${{ github.run_attempt }}" >> $GITHUB_OUTPUT
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: true
+
+      - name: Check Go cache
+        id: go_cache
+        run: |
+          go version
+          go env GOVERSION GOOS GOARCH
+
+      - name: Download dependencies
+        run: ${{ inputs.dep_command }}
+
+  code-checks:
+    name: Code Checks
+    runs-on: ubuntu-latest
+    needs: [setup]
+    if: always() && needs.setup.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: true
+
+      - name: Run code checks
+        run: ${{ inputs.lint_command }}
+
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+    needs: [setup]
+    if: always() && inputs.test_command != '' && needs.setup.result == 'success'
+    outputs:
+      coverage: ${{ steps.coverage.outputs.coverage }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: true
+
+      - name: Run tests
+        id: test_run
+        run: |
+          echo "Running: ${{ inputs.test_command }}"
+          ${{ inputs.test_command }}
+
+      - name: Extract coverage
+        id: coverage
+        if: contains(inputs.test_command, 'coverage')
+        run: |
+          if [[ -f "coverage.txt" ]]; then
+            coverage=$(go tool cover -func=coverage.txt | grep total | grep -oE '[0-9]+\.[0-9]+')
+            echo "coverage=${coverage}" >> $GITHUB_OUTPUT
+            echo "::notice title=Test Coverage::Coverage: ${coverage}%"
+
+            # Check coverage threshold
+            threshold=${{ inputs.coverage_threshold }}
+            if (( $(echo "${coverage} < ${threshold}" | bc -l) )); then
+              echo "::error title=Coverage Too Low::Coverage ${coverage}% is below threshold ${threshold}%"
+              exit 1
+            fi
+          else
+            echo "::warning title=No Coverage File::coverage.txt not found, skipping coverage check"
+          fi
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [setup, code-checks, test]
+    if: contains(github.ref, 'refs/tags/') && (needs.test.result == 'success' || needs.test.result == 'skipped') && needs.code-checks.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the tag name
+          tag_name=${GITHUB_REF#refs/tags/}
+          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
+
+          # Generate changelog from git log
+          if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
+            prev_tag=$(git describe --tags --abbrev=0 HEAD^)
+            echo "## Changes in ${tag_name}" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"* %s (%h)" ${prev_tag}..HEAD >> CHANGELOG.md
+          else
+            echo "## Initial Release ${tag_name}" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "🎉 First release of this project!" >> CHANGELOG.md
+          fi
+
+          # Add test coverage info if available
+          if [[ "${{ needs.test.outputs.coverage }}" != "" ]]; then
+            echo "" >> CHANGELOG.md
+            echo "### Quality Metrics" >> CHANGELOG.md
+            echo "* Test Coverage: ${{ needs.test.outputs.coverage }}%" >> CHANGELOG.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag_name }}
+          name: Release ${{ steps.changelog.outputs.tag_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(steps.changelog.outputs.tag_name, 'alpha') || contains(steps.changelog.outputs.tag_name, 'beta') || contains(steps.changelog.outputs.tag_name, 'rc') }}
+          files: ""
+          generate_release_notes: true
+          make_latest: ${{ !contains(steps.changelog.outputs.tag_name, 'alpha') && !contains(steps.changelog.outputs.tag_name, 'beta') && !contains(steps.changelog.outputs.tag_name, 'rc') }}
