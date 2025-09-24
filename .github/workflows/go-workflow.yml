@@ -73,7 +73,8 @@ jobs:
   code-checks:
     name: Code Checks
     runs-on: ubuntu-latest
-    if: always() && inputs.lint_command != ''
+    needs: [setup]
+    if: always() && inputs.lint_command != '' && needs.setup.result == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -98,7 +99,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    if: always() && inputs.test_command != ''
+    needs: [setup]
+    if: always() && inputs.test_command != '' && needs.setup.result == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
