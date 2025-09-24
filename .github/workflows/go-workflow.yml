@@ -64,15 +64,19 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       cache-key: ${{ steps.set_cache_key.outputs.CACHE_KEY }}
-      go-cache: ${{ steps.go_cache.outputs.cache-hit }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
       - name: Set cache key
         id: set_cache_key
         run: |
           echo "CACHE_KEY=go-pkg-${{ inputs.go_version }}-${{ github.run_number }}-${{ github.sha }}-${{ github.run_attempt }}" >> $GITHUB_OUTPUT
+
+  code-checks:
+    name: Code Checks
+    runs-on: ubuntu-latest
+    if: always() && inputs.lint_command != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -86,32 +90,15 @@ jobs:
           go version
           go env GOVERSION GOOS GOARCH
 
-      - name: Download dependencies
+      - name: Setup dependencies
         run: ${{ inputs.dep_command }}
-
-  code-checks:
-    name: Code Checks
-    runs-on: ubuntu-latest
-    needs: [setup]
-    if: always() && needs.setup.result == 'success'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ inputs.go_version }}
-          cache: true
-
       - name: Run code checks
         run: ${{ inputs.lint_command }}
 
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: [setup]
-    if: always() && inputs.test_command != '' && needs.setup.result == 'success'
+    if: always() && inputs.test_command != ''
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -121,6 +108,15 @@ jobs:
         with:
           go-version: ${{ inputs.go_version }}
           cache: true
+
+      - name: Check Go cache
+        id: go_cache
+        run: |
+          go version
+          go env GOVERSION GOOS GOARCH
+
+      - name: Setup dependencies
+        run: ${{ inputs.dep_command }}
 
       - name: Run tests
         run: |
@@ -130,8 +126,8 @@ jobs:
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: [setup, code-checks, test]
-    if: contains(github.ref, 'refs/tags/') && (needs.test.result == 'success' || needs.test.result == 'skipped') && needs.code-checks.result == 'success'
+    needs: [code-checks, test]
+    if: contains(github.ref, 'refs/tags/') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.code-checks.result == 'success' || needs.code-checks.result == 'skipped')
     permissions:
       contents: write
       actions: read
