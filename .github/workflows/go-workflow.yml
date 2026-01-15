@@ -23,6 +23,11 @@ on:
         required: false
         default: "make dep"
         type: string
+      is_vendored:
+        description: "Whether dependencies are vendored (skips dep_command)"
+        required: false
+        default: false
+        type: boolean
       debug:
         description: "Debug workflow"
         required: false
@@ -57,6 +62,7 @@ jobs:
           echo "test_command: ${{ inputs.test_command }}"
           echo "lint_command: ${{ inputs.lint_command }}"
           echo "dep_command: ${{ inputs.dep_command }}"
+          echo "is_vendored: ${{ inputs.is_vendored }}"
           echo "::endgroup::"
 
   setup:
@@ -92,6 +98,7 @@ jobs:
           go env GOVERSION GOOS GOARCH
 
       - name: Setup dependencies
+        if: ${{ !inputs.is_vendored }}
         run: ${{ inputs.dep_command }}
       - name: Run code checks
         run: ${{ inputs.lint_command }}
@@ -118,6 +125,7 @@ jobs:
           go env GOVERSION GOOS GOARCH
 
       - name: Setup dependencies
+        if: ${{ !inputs.is_vendored }}
         run: ${{ inputs.dep_command }}
 
       - name: Run tests
