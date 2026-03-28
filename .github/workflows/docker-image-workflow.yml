@@ -98,24 +98,12 @@ jobs:
           repository: ${{ inputs.repository_name }}
 
   # multi-target build (when build_targets is provided)
-  prepare-matrix:
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Set matrix
-        id: set-matrix
-        run: |
-          echo "matrix=${{ inputs.build_targets }}" >> $GITHUB_OUTPUT
-
   push-to-dockerhub-multi:
     if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
-    needs: prepare-matrix
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+        include: ${{ fromJson(inputs.build_targets) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
