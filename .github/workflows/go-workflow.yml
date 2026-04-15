@@ -6,7 +6,7 @@ on:
       go_version:
         description: "Go version to use"
         required: false
-        default: "1.24"
+        default: "1.26"
         type: string
       test_command:
         description: "Command to run tests"
@@ -83,10 +83,10 @@ jobs:
     if: always() && inputs.lint_command != '' && needs.setup.result == 'success'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: ${{ inputs.go_version }}
           cache: true
@@ -110,10 +110,10 @@ jobs:
     if: always() && inputs.test_command != '' && needs.setup.result == 'success'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: ${{ inputs.go_version }}
           cache: true
@@ -143,12 +143,12 @@ jobs:
       actions: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: ${{ inputs.go_version }}
           cache: true
@@ -169,11 +169,11 @@ jobs:
           else
             echo "## Initial Release ${tag_name}" > CHANGELOG.md
             echo "" >> CHANGELOG.md
-            echo "🎉 First release of this project!" >> CHANGELOG.md
+            echo "First release of this project." >> CHANGELOG.md
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: ${{ steps.changelog.outputs.tag_name }}
           name: Release ${{ steps.changelog.outputs.tag_name }}
