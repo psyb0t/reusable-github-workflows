@@ -27,7 +27,7 @@ on:
         default: "medium"
 
       scan_enabled:
-        description: "Enable Grype vulnerability scan before push"
+        description: "Enable Grype vulnerability scan (runs after push, failure shows in pipeline)"
         required: false
         type: boolean
         default: true
@@ -42,74 +42,12 @@ on:
         required: true
 
 jobs:
-  release:
-    needs: [push, push-multi]
-    if: always() && startsWith(github.ref, 'refs/tags/') && (needs.push.result == 'success' || needs.push.result == 'skipped') && (needs.push-multi.result == 'success' || needs.push-multi.result == 'skipped') && !(needs.push.result == 'skipped' && needs.push-multi.result == 'skipped')
-    runs-on: ubuntu-latest
-    permissions: write-all
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-
   # ══════════════════════════════════════════════
   # Single image (default, backwards compatible)
   # ══════════════════════════════════════════════
 
   build:
     if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets == ''
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Build image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          context: .
-          load: true
-          tags: ${{ inputs.repository_name }}:scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  scan:
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets == '' && inputs.scan_enabled
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Rebuild from cache
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          context: .
-          load: true
-          tags: ${{ inputs.repository_name }}:scan
-          cache-from: type=gha
-
-      - name: Scan image with Grype
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
-        with:
-          image: ${{ inputs.repository_name }}:scan
-          fail-build: true
-          severity-cutoff: ${{ inputs.scan_severity }}
-          output-format: table
-
-  push:
-    needs: [build, scan]
-    if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets == '' && needs.build.result == 'success' && (!inputs.scan_enabled || needs.scan.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -136,6 +74,7 @@ jobs:
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:latest
           cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Get Release Version
         if: startsWith(github.ref, 'refs/tags/')
@@ -152,6 +91,7 @@ jobs:
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:${{ env.RELEASE_VERSION }}
           cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Docker Hub Description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
@@ -160,70 +100,37 @@ jobs:
           password: ${{ secrets.dockerhub_token }}
           repository: ${{ inputs.repository_name }}
 
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+
+  scan:
+    needs: build
+    if: always() && needs.build.result == 'success' && inputs.build_targets == '' && inputs.scan_enabled
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan pushed image with Grype
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ inputs.repository_name }}:latest
+          fail-build: true
+          severity-cutoff: ${{ inputs.scan_severity }}
+          output-format: table
+
   # ══════════════════════════════════════════════
   # Multi-target build
   # ══════════════════════════════════════════════
 
   build-multi:
     if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include: ${{ fromJson(inputs.build_targets) }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Build image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          context: .
-          load: true
-          target: ${{ matrix.target }}
-          tags: ${{ inputs.repository_name }}:scan${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
-
-  scan-multi:
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && inputs.scan_enabled
-    needs: build-multi
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include: ${{ fromJson(inputs.build_targets) }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Rebuild from cache
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          context: .
-          load: true
-          target: ${{ matrix.target }}
-          tags: ${{ inputs.repository_name }}:scan${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ matrix.target }}
-
-      - name: Scan image with Grype
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
-        with:
-          image: ${{ inputs.repository_name }}:scan${{ matrix.tag_suffix }}
-          fail-build: true
-          severity-cutoff: ${{ inputs.scan_severity }}
-          output-format: table
-
-  push-multi:
-    needs: [build-multi, scan-multi]
-    if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success' && (!inputs.scan_enabled || needs.scan-multi.result == 'success')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -254,6 +161,7 @@ jobs:
           target: ${{ matrix.target }}
           tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
 
       - name: Get Release Version
         if: startsWith(github.ref, 'refs/tags/')
@@ -271,10 +179,39 @@ jobs:
           target: ${{ matrix.target }}
           tags: ${{ inputs.repository_name }}:${{ env.RELEASE_VERSION }}${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+  release-multi:
+    needs: build-multi
+    if: startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success'
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+
+  scan-multi:
+    needs: build-multi
+    if: always() && needs.build-multi.result == 'success' && inputs.build_targets != '' && inputs.scan_enabled
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJson(inputs.build_targets) }}
+    steps:
+      - name: Scan pushed image with Grype
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
+          fail-build: true
+          severity-cutoff: ${{ inputs.scan_severity }}
+          output-format: table
 
   update-dockerhub-description:
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
-    needs: push-multi
+    needs: build-multi
+    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
