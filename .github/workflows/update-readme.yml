@@ -2,6 +2,7 @@ name: Update README
 
 on:
   push:
+    branches: [main, master]
     paths:
       - ".github/workflows/**"
 
