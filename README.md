@@ -5,12 +5,30 @@ Just some reusable github workflows.
 ## Workflows
 
 <!-- SCRIPTS_START -->
+- [collaborators-only-workflow.yml](.github/workflows/collaborators-only-workflow.yml)
 - [docker-image-workflow.yml](.github/workflows/docker-image-workflow.yml)
 - [go-workflow.yml](.github/workflows/go-workflow.yml)
 - [python-package-workflow.yml](.github/workflows/python-package-workflow.yml)
 <!-- SCRIPTS_END -->
 
 ## Examples
+
+### collaborators-only-workflow.yml
+
+```yaml
+name: Collaborators Only
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  collaborators-only:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/collaborators-only-workflow.yml@master
+    with:
+      close_message: "This repository does not accept external pull requests. Please open an issue instead."
+      lock: true
+```
 
 ### docker-image-workflow.yml
 

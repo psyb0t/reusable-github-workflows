@@ -1,0 +1,68 @@
+name: Collaborators Only Workflow
+
+on:
+  workflow_call:
+    inputs:
+      close_message:
+        description: "Message to post when closing unauthorized PRs"
+        required: false
+        default: "This repository does not accept external pull requests. Please open an issue instead."
+        type: string
+      lock:
+        description: "Lock the PR conversation after closing"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  check-collaborator:
+    name: Check Collaborator
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Close PR if not a collaborator
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sender = context.payload.sender.login;
+
+            try {
+              await github.rest.repos.checkCollaborator({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: sender,
+              });
+              console.log(`${sender} is a collaborator — allowing PR`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              console.log(`${sender} is not a collaborator — closing PR`);
+            }
+
+            const prNumber = context.payload.pull_request.number;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `${{ inputs.close_message }}`,
+            });
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              state: 'closed',
+            });
+
+            if (${{ inputs.lock }}) {
+              await github.rest.issues.lock({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+              });
+            }
