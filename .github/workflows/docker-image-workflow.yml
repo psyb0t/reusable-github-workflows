@@ -24,7 +24,7 @@ on:
         description: "Grype severity threshold to fail on (negligible, low, medium, high, critical)"
         required: false
         type: string
-        default: "critical"
+        default: "medium"
 
       scan_enabled:
         description: "Enable Grype vulnerability scan"
