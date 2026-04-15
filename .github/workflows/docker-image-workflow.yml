@@ -99,6 +99,9 @@ jobs:
           tags: ${{ inputs.repository_name }}:scan
           cache-from: type=gha
 
+      - name: Create Grype config
+        run: printf 'ignore:\n  - fix-state: unknown\n' > /tmp/.grype.yaml
+
       - name: Scan image with Grype
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
@@ -106,6 +109,7 @@ jobs:
           fail-build: true
           severity-cutoff: ${{ inputs.scan_severity }}
           output-format: table
+          config: /tmp/.grype.yaml
 
   push:
     needs: [build, scan]
@@ -213,6 +217,9 @@ jobs:
           tags: ${{ inputs.repository_name }}:scan${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ matrix.target }}
 
+      - name: Create Grype config
+        run: printf 'ignore:\n  - fix-state: unknown\n' > /tmp/.grype.yaml
+
       - name: Scan image with Grype
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
@@ -220,6 +227,7 @@ jobs:
           fail-build: true
           severity-cutoff: ${{ inputs.scan_severity }}
           output-format: table
+          config: /tmp/.grype.yaml
 
   push-multi:
     needs: [build-multi, scan-multi]
