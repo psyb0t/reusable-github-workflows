@@ -32,6 +32,12 @@ on:
         type: boolean
         default: true
 
+      cache_mode:
+        description: "Buildx cache mode (max caches all layers, min caches final only). Use min for large images that fail to push."
+        required: false
+        type: string
+        default: "max"
+
     secrets:
       dockerhub_username:
         description: "Docker Hub username"
@@ -74,7 +80,7 @@ jobs:
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:latest
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=${{ inputs.cache_mode }}
 
       - name: Get Release Version
         if: startsWith(github.ref, 'refs/tags/')
@@ -91,7 +97,7 @@ jobs:
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:${{ env.RELEASE_VERSION }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=${{ inputs.cache_mode }}
 
       - name: Docker Hub Description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
@@ -161,7 +167,7 @@ jobs:
           target: ${{ matrix.target }}
           tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ matrix.target }}
 
       - name: Get Release Version
         if: startsWith(github.ref, 'refs/tags/')
@@ -179,7 +185,7 @@ jobs:
           target: ${{ matrix.target }}
           tags: ${{ inputs.repository_name }}:${{ env.RELEASE_VERSION }}${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ matrix.target }}
 
   release-multi:
     needs: build-multi
