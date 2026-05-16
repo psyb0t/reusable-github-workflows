@@ -1,5 +1,11 @@
 name: Go Workflow
 
+# SECURITY: `test_command`, `lint_command`, `dep_command` are interpolated
+# directly into shell scripts. Callers control these strings and effectively
+# get arbitrary code execution on the runner with whatever secrets/permissions
+# the caller workflow grants. Only call this workflow from trusted repos with
+# branch protection on the workflow files.
+
 on:
   workflow_call:
     inputs:
@@ -43,15 +49,16 @@ on:
         required: false
         default: false
         type: boolean
-    outputs:
-      cache-key:
-        description: "Cache key for artifacts"
-        value: ${{ jobs.setup.outputs.cache-key }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   debug-workflow:
     name: Debug Info
     runs-on: ${{ inputs.runs_on }}
+    permissions: {}
     if: inputs.debug
     steps:
       - name: Debug GitHub context
@@ -75,22 +82,12 @@ jobs:
           echo "is_vendored: ${{ inputs.is_vendored }}"
           echo "::endgroup::"
 
-  setup:
-    name: Setup
-    runs-on: ${{ inputs.runs_on }}
-    outputs:
-      cache-key: ${{ steps.set_cache_key.outputs.CACHE_KEY }}
-    steps:
-      - name: Set cache key
-        id: set_cache_key
-        run: |
-          echo "CACHE_KEY=go-pkg-${{ inputs.go_version }}-${{ github.run_number }}-${{ github.sha }}-${{ github.run_attempt }}" >> $GITHUB_OUTPUT
-
   code-checks:
     name: Code Checks
     runs-on: ${{ inputs.runs_on }}
-    needs: [setup]
-    if: always() && inputs.lint_command != '' && needs.setup.result == 'success'
+    permissions:
+      contents: read
+    if: inputs.lint_command != ''
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -101,23 +98,19 @@ jobs:
           go-version: ${{ inputs.go_version }}
           cache: true
 
-      - name: Check Go cache
-        id: go_cache
-        run: |
-          go version
-          go env GOVERSION GOOS GOARCH
-
       - name: Setup dependencies
         if: ${{ !inputs.is_vendored }}
         run: ${{ inputs.dep_command }}
+
       - name: Run code checks
         run: ${{ inputs.lint_command }}
 
   test:
     name: Test
     runs-on: ${{ inputs.runs_on }}
-    needs: [setup]
-    if: always() && inputs.test_command != '' && needs.setup.result == 'success'
+    permissions:
+      contents: read
+    if: inputs.test_command != ''
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -127,12 +120,6 @@ jobs:
         with:
           go-version: ${{ inputs.go_version }}
           cache: true
-
-      - name: Check Go cache
-        id: go_cache
-        run: |
-          go version
-          go env GOVERSION GOOS GOARCH
 
       - name: Setup dependencies
         if: ${{ !inputs.is_vendored }}
@@ -146,8 +133,9 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ${{ inputs.runs_on }}
-    needs: [setup]
-    if: always() && needs.setup.result == 'success' && inputs.scan_enabled
+    permissions:
+      contents: read
+    if: inputs.scan_enabled
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -164,17 +152,16 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
 
   release:
     name: GitHub Release
     runs-on: ${{ inputs.runs_on }}
     needs: [code-checks, test, security-scan]
-    if: contains(github.ref, 'refs/tags/') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.code-checks.result == 'success' || needs.code-checks.result == 'skipped') && (!inputs.scan_enabled || needs.security-scan.result == 'success')
+    if: always() && contains(github.ref, 'refs/tags/') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.code-checks.result == 'success' || needs.code-checks.result == 'skipped') && (!inputs.scan_enabled || needs.security-scan.result == 'success')
     permissions:
       contents: write
-      actions: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -187,19 +174,23 @@ jobs:
           go-version: ${{ inputs.go_version }}
           cache: true
 
-      - name: Generate changelog
+      - name: Generate changelog and classify release
         id: changelog
         run: |
-          # Get the tag name
           tag_name=${GITHUB_REF#refs/tags/}
-          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
 
-          # Generate changelog from git log
+          if echo "$tag_name" | grep -qiE '(alpha|beta|rc)'; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
             prev_tag=$(git describe --tags --abbrev=0 HEAD^)
             echo "## Changes in ${tag_name}" > CHANGELOG.md
             echo "" >> CHANGELOG.md
-            git log --pretty=format:"* %s (%h)" ${prev_tag}..HEAD >> CHANGELOG.md
+            git log --pretty=format:"* %s (%h)" "${prev_tag}..HEAD" >> CHANGELOG.md
           else
             echo "## Initial Release ${tag_name}" > CHANGELOG.md
             echo "" >> CHANGELOG.md
@@ -213,7 +204,7 @@ jobs:
           name: Release ${{ steps.changelog.outputs.tag_name }}
           body_path: CHANGELOG.md
           draft: false
-          prerelease: ${{ contains(steps.changelog.outputs.tag_name, 'alpha') || contains(steps.changelog.outputs.tag_name, 'beta') || contains(steps.changelog.outputs.tag_name, 'rc') }}
+          prerelease: ${{ steps.changelog.outputs.is_prerelease == 'true' }}
           files: ""
           generate_release_notes: true
-          make_latest: ${{ !contains(steps.changelog.outputs.tag_name, 'alpha') && !contains(steps.changelog.outputs.tag_name, 'beta') && !contains(steps.changelog.outputs.tag_name, 'rc') }}
+          make_latest: ${{ steps.changelog.outputs.is_prerelease != 'true' }}

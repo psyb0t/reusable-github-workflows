@@ -11,6 +11,10 @@ Just some reusable github workflows.
 - [python-package-workflow.yml](.github/workflows/python-package-workflow.yml)
 <!-- SCRIPTS_END -->
 
+## Pinning
+
+Examples below use `@master` for readability. For production use, pin to a tag (`@v0.4.0`) or full commit SHA — `@master` will pick up any future change without warning.
+
 ## Examples
 
 ### collaborators-only-workflow.yml

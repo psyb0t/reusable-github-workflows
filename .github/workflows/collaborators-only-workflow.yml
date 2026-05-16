@@ -1,5 +1,16 @@
 name: Collaborators Only Workflow
 
+# Caller MUST trigger this with `on: pull_request_target` (not pull_request)
+# so the token has permission to comment/close PRs from forks.
+# Example caller workflow:
+#
+#   on:
+#     pull_request_target:
+#       types: [opened, reopened]
+#   jobs:
+#     gate:
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/collaborators-only-workflow.yml@<sha>
+
 on:
   workflow_call:
     inputs:
@@ -14,6 +25,10 @@ on:
         default: true
         type: boolean
 
+concurrency:
+  group: collaborators-only-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   check-collaborator:
     name: Check Collaborator
@@ -22,25 +37,28 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - name: Close PR if not a collaborator
+      - name: Close PR if author is not a collaborator
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          CLOSE_MESSAGE: ${{ inputs.close_message }}
+          LOCK_PR: ${{ inputs.lock }}
         with:
           script: |
-            const sender = context.payload.sender.login;
+            const author = context.payload.pull_request.user.login;
 
             try {
               await github.rest.repos.checkCollaborator({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                username: sender,
+                username: author,
               });
-              console.log(`${sender} is a collaborator — allowing PR`);
+              console.log(`${author} is a collaborator — allowing PR`);
               return;
             } catch (error) {
               if (error.status !== 404) {
                 throw error;
               }
-              console.log(`${sender} is not a collaborator — closing PR`);
+              console.log(`${author} is not a collaborator — closing PR`);
             }
 
             const prNumber = context.payload.pull_request.number;
@@ -49,7 +67,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `${{ inputs.close_message }}`,
+              body: process.env.CLOSE_MESSAGE,
             });
 
             await github.rest.pulls.update({
@@ -59,7 +77,7 @@ jobs:
               state: 'closed',
             });
 
-            if (${{ inputs.lock }}) {
+            if (process.env.LOCK_PR === 'true') {
               await github.rest.issues.lock({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
