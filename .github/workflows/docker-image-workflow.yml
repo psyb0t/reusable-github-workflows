@@ -15,7 +15,7 @@ on:
         default: "linux/amd64,linux/arm64"
 
       build_targets:
-        description: 'JSON array of build targets. Each entry: {"target": "stage_name", "tag_suffix": ""}. Empty tag_suffix = :latest. Example: [{"target":"full","tag_suffix":""},{"target":"minimal","tag_suffix":"-minimal"}]'
+        description: 'JSON array of build targets. Each entry: {"tag_suffix": "", "target": "stage_name" (optional), "file": "Dockerfile.foo" (optional), "platforms": "linux/amd64" (optional, overrides input.target_platforms)}. Empty tag_suffix = :latest. Use "target" for multi-stage builds from one Dockerfile, "file" for multi-Dockerfile repos, "platforms" for per-image arch overrides (e.g. CUDA image amd64-only while CPU image stays multi-arch). Examples: [{"target":"full","tag_suffix":""},{"target":"minimal","tag_suffix":"-minimal"}] or [{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.cuda","tag_suffix":"-cuda","platforms":"linux/amd64"}]'
         required: false
         type: string
         default: ""
@@ -183,11 +183,12 @@ jobs:
         with:
           context: .
           push: true
-          platforms: ${{ inputs.target_platforms }}
-          target: ${{ matrix.target }}
+          file: ${{ matrix.file || 'Dockerfile' }}
+          platforms: ${{ matrix.platforms || inputs.target_platforms }}
+          target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -197,11 +198,12 @@ jobs:
         with:
           context: .
           push: true
-          platforms: ${{ inputs.target_platforms }}
-          target: ${{ matrix.target }}
+          file: ${{ matrix.file || 'Dockerfile' }}
+          platforms: ${{ matrix.platforms || inputs.target_platforms }}
+          target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 

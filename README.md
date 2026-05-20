@@ -53,6 +53,72 @@ jobs:
       dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 ```
 
+#### Multi-target builds (multi-stage or multi-Dockerfile)
+
+Ship multiple image variants from one pipeline run by passing a `build_targets` JSON array. Each entry produces one image tagged with `tag_suffix`.
+
+**Multi-stage from one Dockerfile** (e.g. `full` + `minimal` stages):
+
+```yaml
+jobs:
+  call-docker-image-workflow:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: dockerhub-org/repo
+      build_targets: |
+        [
+          {"target": "full",    "tag_suffix": ""},
+          {"target": "minimal", "tag_suffix": "-minimal"}
+        ]
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+**Multi-Dockerfile** (e.g. separate CPU and CUDA builds):
+
+```yaml
+jobs:
+  call-docker-image-workflow:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: dockerhub-org/repo
+      target_platforms: "linux/amd64"
+      build_targets: |
+        [
+          {"file": "Dockerfile",      "tag_suffix": ""},
+          {"file": "Dockerfile.cuda", "tag_suffix": "-cuda"}
+        ]
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+**Per-image platforms override** (CPU image multi-arch, CUDA image amd64-only):
+
+```yaml
+jobs:
+  call-docker-image-workflow:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: dockerhub-org/repo
+      target_platforms: "linux/amd64,linux/arm64"
+      build_targets: |
+        [
+          {"file": "Dockerfile",      "tag_suffix": ""},
+          {"file": "Dockerfile.cuda", "tag_suffix": "-cuda", "platforms": "linux/amd64"}
+        ]
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+Entry fields:
+- `tag_suffix` (required) — appended to the image tag. Empty string = unsuffixed (`:latest` / `:v1.2.3`).
+- `target` (optional) — Dockerfile stage. Omit for multi-Dockerfile builds.
+- `file` (optional) — Dockerfile path. Defaults to `Dockerfile`. Use for multi-Dockerfile repos.
+- `platforms` (optional) — comma-separated platforms for this entry. Falls back to `inputs.target_platforms` if absent.
+
 ### python-package-workflow.yml
 
 ```yaml
