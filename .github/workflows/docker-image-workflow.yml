@@ -50,6 +50,12 @@ on:
         type: boolean
         default: true
 
+      free_disk_space:
+        description: "Free ~25GB on the runner before build (removes Android SDK, .NET, Haskell, CodeQL, large apt pkgs, preloaded docker images). Only enable on GitHub-hosted runners; harmful on self-hosted."
+        required: false
+        type: boolean
+        default: false
+
     secrets:
       dockerhub_username:
         description: "Docker Hub username"
@@ -76,6 +82,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Free disk space
+        if: inputs.free_disk_space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -164,6 +182,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Free disk space
+        if: inputs.free_disk_space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
