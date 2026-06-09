@@ -38,49 +38,35 @@ jobs:
       issues: write
     steps:
       - name: Close PR if author is not a collaborator
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
           CLOSE_MESSAGE: ${{ inputs.close_message }}
           LOCK_PR: ${{ inputs.lock }}
-        with:
-          script: |
-            const author = context.payload.pull_request.user.login;
+        run: |
+          set -euo pipefail
 
-            try {
-              await github.rest.repos.checkCollaborator({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                username: author,
-              });
-              console.log(`${author} is a collaborator — allowing PR`);
-              return;
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
-              }
-              console.log(`${author} is not a collaborator — closing PR`);
-            }
+          # 204 = collaborator, 404 = not collaborator, anything else = bail.
+          status=$(gh api -i "repos/${REPO}/collaborators/${AUTHOR}" 2>/dev/null \
+            | head -n1 | awk '{print $2}' || true)
 
-            const prNumber = context.payload.pull_request.number;
+          if [ "$status" = "204" ]; then
+            echo "${AUTHOR} is a collaborator — allowing PR"
+            exit 0
+          fi
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: process.env.CLOSE_MESSAGE,
-            });
+          if [ "$status" != "404" ]; then
+            echo "Unexpected status ${status} from collaborator check" >&2
+            exit 1
+          fi
 
-            await github.rest.pulls.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              state: 'closed',
-            });
+          echo "${AUTHOR} is not a collaborator — closing PR"
 
-            if (process.env.LOCK_PR === 'true') {
-              await github.rest.issues.lock({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-              });
-            }
+          gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "${CLOSE_MESSAGE}"
+          gh pr close "${PR_NUMBER}" --repo "${REPO}"
+
+          if [ "${LOCK_PR}" = "true" ]; then
+            gh pr lock "${PR_NUMBER}" --repo "${REPO}"
+          fi
