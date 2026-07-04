@@ -147,6 +147,24 @@ with:
     ]
 ```
 
+**Ordered builds** (a variant that does `FROM <repo>:latest` must build after the base is pushed):
+
+```yaml
+with:
+  repository_name: psyb0t/myapp
+  build_targets: |
+    [
+      {"file": "Dockerfile",      "tag_suffix": ""},
+      {"file": "Dockerfile.full", "tag_suffix": "-full", "stage": 1}
+    ]
+```
+
+Without `stage`, every target builds in parallel — so a `Dockerfile.full` that
+does `FROM psyb0t/myapp:latest` would pull the *previously published* base, not
+the one built in the same run. Marking it `"stage": 1` makes it wait until every
+stage-0 target has built **and pushed**, so it inherits the fresh base. Targets
+sharing a stage still build in parallel; stages run in ascending order.
+
 `build_targets` entry fields:
 
 | Field | Required | Description |
@@ -155,6 +173,7 @@ with:
 | `target` | no | Dockerfile stage. Omit for multi-Dockerfile builds. |
 | `file` | no | Dockerfile path. Defaults to `Dockerfile`. |
 | `platforms` | no | Platforms for this entry. Falls back to `inputs.target_platforms`. |
+| `stage` | no | Build wave, default `0`. All stage-0 targets build+push before any stage-1 target starts. Use for images that `FROM` another target's pushed tag. |
 
 ### Disk space notes
 

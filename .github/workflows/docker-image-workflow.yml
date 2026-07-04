@@ -15,7 +15,7 @@ on:
         default: "linux/amd64,linux/arm64"
 
       build_targets:
-        description: 'JSON array of build targets. Each entry: {"tag_suffix": "", "target": "stage_name" (optional), "file": "Dockerfile.foo" (optional), "platforms": "linux/amd64" (optional, overrides input.target_platforms)}. Empty tag_suffix = :latest. Use "target" for multi-stage builds from one Dockerfile, "file" for multi-Dockerfile repos, "platforms" for per-image arch overrides (e.g. CUDA image amd64-only while CPU image stays multi-arch). Examples: [{"target":"full","tag_suffix":""},{"target":"minimal","tag_suffix":"-minimal"}] or [{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.cuda","tag_suffix":"-cuda","platforms":"linux/amd64"}]'
+        description: 'JSON array of build targets. Each entry: {"tag_suffix": "", "target": "stage_name" (optional), "file": "Dockerfile.foo" (optional), "platforms": "linux/amd64" (optional, overrides input.target_platforms), "stage": 0 (optional build wave, default 0)}. Empty tag_suffix = :latest. Use "target" for multi-stage builds from one Dockerfile, "file" for multi-Dockerfile repos, "platforms" for per-image arch overrides (e.g. CUDA image amd64-only while CPU image stays multi-arch). Use "stage" to ORDER builds: all stage-0 targets build+push before any stage-1 target starts, so an image whose Dockerfile does `FROM <repo>:latest` inherits the freshly-pushed base instead of the previously-published one. Targets without "stage" are stage 0 (all parallel — unchanged). Examples: [{"target":"full","tag_suffix":""},{"target":"minimal","tag_suffix":"-minimal"}] or [{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.full","tag_suffix":"-full","stage":1}]'
         required: false
         type: string
         default: ""
@@ -168,17 +168,110 @@ jobs:
           output-format: table
 
   # ══════════════════════════════════════════════
-  # Multi-target build
+  # Multi-target build (staged: base first, dependents after)
   # ══════════════════════════════════════════════
 
-  build-multi:
+  # Partition build_targets into ordered waves by optional per-target "stage"
+  # (default 0). Wave 0 builds+pushes first; wave 1 builds after. Targets with
+  # no "stage" all land in wave 0 → fully parallel, identical to the previous
+  # behavior. Set "stage": 1 on an image that does `FROM <repo>:latest` so it
+  # inherits the freshly-pushed base instead of the previously-published one.
+  plan-multi:
     if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    outputs:
+      wave0: ${{ steps.split.outputs.wave0 }}
+      wave1: ${{ steps.split.outputs.wave1 }}
+    steps:
+      - name: Split build targets into stage waves
+        id: split
+        env:
+          TARGETS: ${{ inputs.build_targets }}
+        run: |
+          echo "wave0=$(jq -c '[.[] | select((.stage // 0) == 0)]' <<<"$TARGETS")" >> "$GITHUB_OUTPUT"
+          echo "wave1=$(jq -c '[.[] | select((.stage // 0) == 1)]' <<<"$TARGETS")" >> "$GITHUB_OUTPUT"
+
+  build-multi:
+    needs: plan-multi
+    if: needs.plan-multi.result == 'success' && needs.plan-multi.outputs.wave0 != '[]'
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
     strategy:
       matrix:
-        include: ${{ fromJson(inputs.build_targets) }}
+        include: ${{ fromJson(needs.plan-multi.outputs.wave0) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Free disk space
+        if: inputs.free_disk_space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          username: ${{ secrets.dockerhub_username }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: Push latest
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          push: true
+          file: ${{ matrix.file || 'Dockerfile' }}
+          platforms: ${{ matrix.platforms || inputs.target_platforms }}
+          target: ${{ matrix.target || '' }}
+          tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
+          sbom: ${{ inputs.attestations }}
+
+      - name: Push release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          push: true
+          file: ${{ matrix.file || 'Dockerfile' }}
+          platforms: ${{ matrix.platforms || inputs.target_platforms }}
+          target: ${{ matrix.target || '' }}
+          tags: ${{ inputs.repository_name }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
+          sbom: ${{ inputs.attestations }}
+
+  # Wave 1 — runs only after every wave-0 target has pushed. Identical build
+  # steps; the sole differences are the matrix source (wave1) and the `needs`
+  # gate on build-multi. Skipped entirely when no target sets "stage": 1.
+  build-multi-wave1:
+    needs: [plan-multi, build-multi]
+    if: needs.plan-multi.outputs.wave1 != '[]' && (needs.build-multi.result == 'success' || needs.build-multi.result == 'skipped')
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.plan-multi.outputs.wave1) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -238,8 +331,8 @@ jobs:
           sbom: ${{ inputs.attestations }}
 
   release-multi:
-    needs: build-multi
-    if: startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success'
+    needs: [build-multi, build-multi-wave1]
+    if: startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: write
@@ -251,8 +344,8 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
 
   scan-multi:
-    needs: build-multi
-    if: always() && needs.build-multi.result == 'success' && inputs.build_targets != '' && inputs.scan_enabled
+    needs: [build-multi, build-multi-wave1]
+    if: always() && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped') && inputs.build_targets != '' && inputs.scan_enabled
     runs-on: ${{ inputs.runs_on }}
     permissions: {}
     strategy:
@@ -268,8 +361,8 @@ jobs:
           output-format: table
 
   update-dockerhub-description:
-    needs: build-multi
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success'
+    needs: [build-multi, build-multi-wave1]
+    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read

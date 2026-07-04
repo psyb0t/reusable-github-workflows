@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.8.0 — 2026-07-04
+
+Ordered multi-target builds via optional per-target `stage`, so a variant that `FROM`s another target's tag builds after the base is pushed.
+
+- New optional `stage` field on `build_targets` matrix entries (default `0`) in `docker-image-workflow.yml`. All stage-0 targets build+push before any stage-1 target starts. Use it for an image whose Dockerfile does `FROM <repo>:latest` — without ordering it would build in parallel with the base and inherit the *previously published* base instead of the one built in the same run.
+- Multi-target path restructured into waves: a new `plan-multi` job splits `build_targets` into `wave0`/`wave1` with `jq`; `build-multi` builds wave 0, and a new `build-multi-wave1` job builds wave 1 gated on `needs: build-multi`. `release-multi`, `scan-multi`, and `update-dockerhub-description` now depend on both build jobs and tolerate `build-multi-wave1` being skipped.
+- **Backwards compatible.** Targets without `stage` all land in wave 0 and build in parallel exactly as before; `build-multi-wave1` is skipped when no target sets `stage: 1`. Existing callers need no changes.
+- README documents the `stage` field, adds an "Ordered builds" example, and notes stages run in ascending order while same-stage targets stay parallel.
+
 ## v0.7.0 — 2026-06-09
 
 `free_disk_space` flipped to default-on, hand-written README, removed `update-readme.yml` auto-generator, dropped `actions/github-script` dependency, bumped pinned actions.
