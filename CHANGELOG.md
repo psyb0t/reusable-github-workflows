@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.8.1 — 2026-07-22
+
+GitHub Actions cache export is now best-effort for every Docker image build
+path. A cache-service failure no longer cancels a successfully built and pushed
+image.
+
 ## v0.8.0 — 2026-07-04
 
 Ordered multi-target builds via optional per-target `stage`, so a variant that `FROM`s another target's tag builds after the base is pushed.

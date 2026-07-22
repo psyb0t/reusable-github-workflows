@@ -76,7 +76,7 @@ Trigger from `push` so it fires on branch and tag pushes. The workflow itself on
 | `build_targets` | string (JSON) | `""` | Multi-target build matrix (see below). Empty = single-image build. |
 | `scan_enabled` | boolean | `true` | Run Grype scan against the pushed image. |
 | `scan_severity` | string | `"medium"` | Grype severity threshold to fail on: `negligible`, `low`, `medium`, `high`, `critical`. |
-| `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` if your image is too large for `max` to push the cache manifest. |
+| `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `free_disk_space` | boolean | `true` | Free ~25-30 GB before build (Android SDK, .NET, Haskell, large apt packages, preloaded docker images). **Disable for self-hosted runners** — wipes shared host directories. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. Use your self-hosted runner label + `free_disk_space: false`. |

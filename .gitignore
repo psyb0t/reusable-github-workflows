@@ -2,4 +2,6 @@
 CLAUDE.md
 git-update.sh
 ANUSTIMES.md
+.anustimes/
+.brutal_reviews/
 .telemetry/

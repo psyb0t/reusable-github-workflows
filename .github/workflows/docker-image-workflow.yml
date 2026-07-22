@@ -33,7 +33,7 @@ on:
         default: true
 
       cache_mode:
-        description: "Buildx cache mode (max caches all layers, min caches final only). Use min for large images that fail to push."
+        description: "Buildx cache mode (max caches all layers, min caches final only). Cache export is best-effort and never blocks image publication."
         required: false
         type: string
         default: "max"
@@ -116,7 +116,7 @@ jobs:
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:latest
           cache-from: type=gha,scope=${{ github.ref_name }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -129,7 +129,7 @@ jobs:
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:${{ github.ref_name }}
           cache-from: type=gha,scope=${{ github.ref_name }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -241,7 +241,7 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -256,7 +256,7 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -311,7 +311,7 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -326,7 +326,7 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
