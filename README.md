@@ -356,7 +356,8 @@ No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. 
 
 Publishes every skill under a directory to [ClawHub](https://clawhub.ai) (the OpenClaw skill registry), one ClawHub skill per subfolder.
 
-- Discovers each `<skills_dir>/<name>/SKILL.md` and runs the official `clawhub` CLI (`skill publish`) against it. The CLI derives the slug, display name, next version (auto patch-bump off the currently published version, or `1.0.0` for a new skill), summary, and file set — every regular file in the skill folder except dotfiles and `node_modules`.
+- Discovers each `<skills_dir>/<name>/SKILL.md` and runs the official `clawhub` CLI (`skill publish`) against it. The CLI derives the slug, display name, summary, and file set — every regular file in the skill folder except dotfiles and `node_modules`.
+- **Version policy.** On a tag push the ClawHub version **mirrors the git tag** (a leading `v` stripped, e.g. `v1.4.0` → `1.4.0`) — but only when that tag is strictly higher than the skill's current ClawHub version. If ClawHub is already ahead (its version line got out in front of the repo), it falls back to the CLI's automatic patch-bump until a repo tag finally exceeds it, then mirroring takes over. Off a tag (or a non-semver tag) it auto patch-bumps. Set the `version` input to force an explicit version. A version that already exists is treated as "already published", not a failure.
 - Drives the CLI directly — no marketplace publish action and not ClawHub's own reusable workflow — so this repo owns the whole flow.
 - **Read-only repo access.** The job runs with `contents: read` and nothing else; publishing authenticates with the ClawHub token, never a repo-write scope.
 - **Supply-chain hardened.** The CLI version is exact-pinned (`cli_version`), an age-gate step refuses any CLI version published within `min_release_age_days` days, install uses `npm install -g … --ignore-scripts`, and every action is SHA-pinned.
@@ -372,6 +373,7 @@ Publishes every skill under a directory to [ClawHub](https://clawhub.ai) (the Op
 | `site` | string | `"https://clawhub.ai"` | ClawHub site base URL (used by the CLI for page links). |
 | `tags` | string | `"latest"` | Comma-separated ClawHub tags applied to the published version. |
 | `owner` | string | `""` | Publisher handle to publish under (org-scoped). Empty = infer from the token. |
+| `version` | string | `""` | Explicit ClawHub version (semver). Empty = mirror the git tag when it's higher than ClawHub's current version, else auto patch-bump (see Version policy). |
 | `cli_version` | string | `"0.23.1"` | Exact `clawhub` CLI version to install (no ranges). |
 | `node_version` | string | `"22"` | Node.js major version (the CLI requires ≥22). |
 | `min_release_age_days` | number | `7` | Refuse to install a CLI version published more recently than this. |

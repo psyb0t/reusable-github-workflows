@@ -71,6 +71,12 @@ on:
         type: string
         default: ""
 
+      version:
+        description: "Explicit ClawHub version to publish (semver). Empty = mirror the git tag on a tag push (strip a leading 'v'), else let the CLI auto-bump the patch. Must be a version that doesn't already exist on ClawHub."
+        required: false
+        type: string
+        default: ""
+
       cli_version:
         description: "EXACT clawhub CLI version to install (no ranges). Bump consciously; the age-gate re-checks on bump."
         required: false
@@ -168,6 +174,7 @@ jobs:
           SITE: ${{ inputs.site }}
           TAGS: ${{ inputs.tags }}
           OWNER: ${{ inputs.owner }}
+          INPUT_VERSION: ${{ inputs.version }}
           DRY_RUN: ${{ inputs.dry_run }}
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_REF: ${{ github.ref }}
@@ -203,6 +210,27 @@ jobs:
             '{registry: $registry, token: $token}' > "$config_file"
           export CLAWHUB_CONFIG_PATH="$config_file"
 
+          # Version policy (per skill):
+          #  - explicit `version` input wins.
+          #  - else on a tag push, MIRROR the repo tag (strip a leading 'v') —
+          #    but ONLY when it's strictly higher than the skill's CURRENT
+          #    ClawHub version. If ClawHub is already ahead (its version line got
+          #    out in front of the repo), fall back to the CLI's auto patch-bump
+          #    until a repo tag finally exceeds it, then mirroring takes over.
+          #  - else (no tag, no input) auto patch-bump.
+          sanitize_slug() {
+            printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
+          }
+          is_semver() { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; }
+          # ver_gt A B  -> true when A > B in version order (sort -V).
+          ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
+
+          REPO_VER=""
+          case "$SOURCE_REF" in
+            refs/tags/*) REPO_VER="${SOURCE_REF#refs/tags/}"; REPO_VER="${REPO_VER#v}" ;;
+          esac
+
           published=()
           failed=()
 
@@ -210,9 +238,28 @@ jobs:
             name="$(basename "$dir")"
             echo "── $name ──────────────────────────────"
 
+            # Decide this skill's version per the policy above.
+            version_args=()
+            if [ -n "$INPUT_VERSION" ]; then
+              version_args=(--version "$INPUT_VERSION")
+              echo "  version: $INPUT_VERSION (explicit input)"
+            elif [ -n "$REPO_VER" ] && is_semver "$REPO_VER"; then
+              slug="$(sanitize_slug "$name")"
+              clawhub_ver="$(curl -fsS "$REGISTRY/api/v1/skills/$slug" 2>/dev/null | jq -r '.latestVersion.version // empty')"
+              if [ -z "$clawhub_ver" ] || ver_gt "$REPO_VER" "$clawhub_ver"; then
+                version_args=(--version "$REPO_VER")
+                echo "  version: $REPO_VER (mirrors repo tag; ClawHub was ${clawhub_ver:-<new skill>})"
+              else
+                echo "  version: auto patch-bump — repo tag $REPO_VER is not above ClawHub's $clawhub_ver yet"
+              fi
+            else
+              echo "  version: auto patch-bump (no tag / not semver)"
+            fi
+
             # Global flags (--site/--registry) precede the subcommand. The CLI
-            # derives slug/displayName/version/summary/files itself. --source-*
-            # records GitHub provenance on the published version.
+            # derives slug/displayName/summary/files itself; version comes from
+            # --version when we mirror the tag, else the CLI auto-bumps the patch.
+            # --source-* records GitHub provenance on the published version.
             args=(--site "$SITE" --registry "$REGISTRY"
               skill publish "$dir" --json
               --source-repo "$SOURCE_REPO"
@@ -221,6 +268,7 @@ jobs:
             [ -n "$SOURCE_REF" ] && args+=(--source-ref "$SOURCE_REF")
             [ -n "$OWNER" ] && args+=(--owner "$OWNER")
             [ -n "$TAGS" ] && args+=(--tags "$TAGS")
+            [ "${#version_args[@]}" -gt 0 ] && args+=("${version_args[@]}")
             [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
 
             out_file="$(mktemp)"
@@ -233,8 +281,15 @@ jobs:
             else
               err="$(cat /tmp/clawhub.err)"
               body="$(cat "$out_file")"
-              echo "::error::$name — publish failed: ${err:-$body}"
-              failed+=("$name")
+              # A re-run of the same tag tries to publish a version that already
+              # exists — treat that as "already published", not a failure.
+              if printf '%s%s' "$err" "$body" | grep -qiE "already exists"; then
+                echo "  $name — already published at this version; skipping"
+                published+=("$name (already published)")
+              else
+                echo "::error::$name — publish failed: ${err:-$body}"
+                failed+=("$name")
+              fi
             fi
             rm -f "$out_file"
           done

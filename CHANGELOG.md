@@ -4,6 +4,14 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.11.0 — 2026-07-24
+
+`clawhub-skills-publish-workflow.yml`: the ClawHub version now follows the repo's git tag when it's ahead, instead of always blind patch-bumping.
+
+- **Change — version mirrors the git tag.** On a tag push, each skill publishes at the git tag version (leading `v` stripped) — but only when that version is strictly higher than the skill's current ClawHub version. If ClawHub is already ahead (its version line drifted out in front of the repo, e.g. from earlier auto-patch publishes), it falls back to the CLI's automatic patch-bump until a repo tag finally exceeds it, then mirroring takes over. Off a tag or with a non-semver tag it auto patch-bumps as before. The per-skill decision queries `GET /api/v1/skills/<slug>` for the current version and compares with `sort -V`.
+- **New `version` input** (default empty) to force an explicit ClawHub version, overriding the tag/auto logic.
+- **A version that already exists is now treated as "already published"**, not a hard failure — so re-running a tag's pipeline no longer red-fails the publish job.
+
 ## v0.10.0 — 2026-07-24
 
 `docker-image-workflow.yml`: Grype scan now uploads SARIF to the Security tab, plus a `scan_fail_build` toggle so a scan finding no longer has to fail the run.
