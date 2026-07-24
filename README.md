@@ -64,7 +64,7 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 - Updates the Docker Hub repository description (the **Overview** tab) from the repo's `README.md` after every successful push via `peter-evans/dockerhub-description`. The Docker Hub token must have permission to edit the repository.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
 - On tag pushes, creates a GitHub Release once the build succeeds.
-- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push. **Scan failure does NOT block the GitHub Release.** The scan runs after the artifact is already published; the failure surfaces in the workflow summary so you can decide whether to yank the tag.
+- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push, and uploads the findings as SARIF to the repo's **Security → Code scanning** tab. **Scan runs after the artifact is already published, so it never blocks the push or the GitHub Release.** By default a finding at/above `scan_severity` still fails the workflow (red run); set `scan_fail_build: false` to keep scanning + reporting to the Security tab WITHOUT failing the run — the right posture for images with known-unfixable upstream vulns, and required if you want a downstream job (e.g. another reusable workflow) to `needs:` this one. The SARIF upload needs `permissions: security-events: write` on the caller's job (see below); without it, scanning still runs but the Security tab isn't populated.
 
 Trigger from `push` so it fires on branch and tag pushes. The workflow itself only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*` — pushes to other branches do nothing.
 
@@ -75,8 +75,9 @@ Trigger from `push` so it fires on branch and tag pushes. The workflow itself on
 | `repository_name` | string | **required** | Docker Hub repo, e.g. `psyb0t/voidalpha`. |
 | `target_platforms` | string | `"linux/amd64,linux/arm64"` | Comma-separated buildx platforms. Overridable per matrix entry. |
 | `build_targets` | string (JSON) | `""` | Multi-target build matrix (see below). Empty = single-image build. |
-| `scan_enabled` | boolean | `true` | Run Grype scan against the pushed image. |
+| `scan_enabled` | boolean | `true` | Run Grype scan against the pushed image + upload SARIF to the Security tab. |
 | `scan_severity` | string | `"medium"` | Grype severity threshold to fail on: `negligible`, `low`, `medium`, `high`, `critical`. |
+| `scan_fail_build` | boolean | `true` | Fail the run on a finding at/above `scan_severity`. Set `false` to keep scanning + Security-tab reporting without failing the run (known-unfixable upstream vulns; also lets a downstream job `needs:` this workflow). Populating the Security tab needs `permissions: security-events: write` on the caller job. |
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `free_disk_space` | boolean | `true` | Free ~25-30 GB before build (Android SDK, .NET, Haskell, large apt packages, preloaded docker images). **Disable for self-hosted runners** — wipes shared host directories. |
@@ -104,6 +105,32 @@ jobs:
     secrets:
       dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
       dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+### Non-blocking scan + a downstream job that depends on the build
+
+When Grype always finds known-unfixable upstream vulns, set `scan_fail_build: false` so the run goes green (findings still land in the Security tab), and grant `security-events: write` so the SARIF actually uploads. A green run is also what lets another job `needs:` this one:
+
+```yaml
+jobs:
+  docker:
+    permissions:
+      contents: write        # GitHub Release
+      security-events: write # upload Grype SARIF to the Security tab
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: psyb0t/myapp
+      scan_fail_build: false
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  after-build:
+    needs: [docker]          # runs only if build + release succeeded (scan no longer blocks)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "image + release are done"
 ```
 
 ### Multi-target builds

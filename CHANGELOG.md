@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.10.0 — 2026-07-24
+
+`docker-image-workflow.yml`: Grype scan now uploads SARIF to the Security tab, plus a `scan_fail_build` toggle so a scan finding no longer has to fail the run.
+
+- New `scan_fail_build` input (default `true`, backwards compatible). When `false`, Grype still scans + reports but a finding at/above `scan_severity` no longer fails the workflow — the right posture for images with known-unfixable upstream vulns, and what lets a downstream job `needs:` this workflow (a perpetually-red scan would otherwise block it forever).
+- Both the single-image `scan` job and the multi-target `scan-multi` job now run Grype with `output-format: sarif` and upload the result to **Security → Code scanning** via `github/codeql-action/upload-sarif` (SHA-pinned `v4.37.1`). `scan-multi` uses a per-image `category` so matrix targets are tracked separately instead of overwriting each other. The SARIF upload is `continue-on-error` so a missing permission never fails an otherwise-green run.
+- **Caller action needed for the Security tab:** the calling job must grant `permissions: security-events: write` (and `contents: write` if it also cuts a Release). Without it, scanning still runs but the Security tab isn't populated. README documents the pattern.
+- Behavior change for existing callers: scan output moved from a log table to the Security tab (SARIF). Pass/fail behavior is unchanged by default (`scan_fail_build` defaults to `true`).
+
 ## v0.9.0 — 2026-07-24
 
 New `clawhub-skills-publish-workflow.yml` — publishes skills to ClawHub via the official `clawhub` CLI.
