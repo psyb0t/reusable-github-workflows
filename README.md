@@ -12,6 +12,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
 - [docker-image-workflow.yml](.github/workflows/docker-image-workflow.yml) — buildx multi-arch / multi-target Docker Hub publish + Grype scan + GitHub Release
 - [go-workflow.yml](.github/workflows/go-workflow.yml) — Go lint / test / `govulncheck` + GitHub Release on tag
 - [python-package-workflow.yml](.github/workflows/python-package-workflow.yml) — Python lint matrix / test / build / `pip-audit` + PyPI publish + GitHub Release on tag
+- [clawhub-skills-publish-workflow.yml](.github/workflows/clawhub-skills-publish-workflow.yml) — publish every skill under a directory to ClawHub via the official `clawhub` CLI (read-only repo access, age-gated install)
 
 ## Pinning
 
@@ -323,6 +324,55 @@ jobs:
 ```
 
 No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. The `id-token: write` permission on the calling job is required.
+
+## clawhub-skills-publish-workflow.yml
+
+Publishes every skill under a directory to [ClawHub](https://clawhub.ai) (the OpenClaw skill registry), one ClawHub skill per subfolder.
+
+- Discovers each `<skills_dir>/<name>/SKILL.md` and runs the official `clawhub` CLI (`skill publish`) against it. The CLI derives the slug, display name, next version (auto patch-bump off the currently published version, or `1.0.0` for a new skill), summary, and file set — every regular file in the skill folder except dotfiles and `node_modules`.
+- Drives the CLI directly — no marketplace publish action and not ClawHub's own reusable workflow — so this repo owns the whole flow.
+- **Read-only repo access.** The job runs with `contents: read` and nothing else; publishing authenticates with the ClawHub token, never a repo-write scope.
+- **Supply-chain hardened.** The CLI version is exact-pinned (`cli_version`), an age-gate step refuses any CLI version published within `min_release_age_days` days, install uses `npm install -g … --ignore-scripts`, and every action is SHA-pinned.
+- **License:** ClawHub licenses every published skill as `MIT-0` on its side, with no per-skill override — the CLI sends the acceptance. Your repo's own LICENSE is unaffected; this only governs the copy ClawHub hosts.
+- Set `dry_run: true` to resolve + validate every skill without publishing.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `skills_dir` | string | `".agents/skills"` | Directory holding one subfolder per skill, each with a `SKILL.md`. |
+| `registry` | string | `"https://clawhub.ai"` | ClawHub registry base URL. |
+| `site` | string | `"https://clawhub.ai"` | ClawHub site base URL (used by the CLI for page links). |
+| `tags` | string | `"latest"` | Comma-separated ClawHub tags applied to the published version. |
+| `owner` | string | `""` | Publisher handle to publish under (org-scoped). Empty = infer from the token. |
+| `cli_version` | string | `"0.23.1"` | Exact `clawhub` CLI version to install (no ranges). |
+| `node_version` | string | `"22"` | Node.js major version (the CLI requires ≥22). |
+| `min_release_age_days` | number | `7` | Refuse to install a CLI version published more recently than this. |
+| `dry_run` | boolean | `false` | Resolve + validate but don't publish. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. |
+
+### Secrets
+
+| Secret | Required | Description |
+|---|---|---|
+| `clawhub_token` | yes | ClawHub API token (`clh_...`) with publish scope. |
+
+### Example
+
+```yaml
+name: publish-skills
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  clawhub:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/clawhub-skills-publish-workflow.yml@master
+    with:
+      skills_dir: .agents/skills
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
+```
 
 ## License
 

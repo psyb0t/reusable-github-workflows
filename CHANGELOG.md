@@ -4,6 +4,16 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.9.0 — 2026-07-24
+
+New `clawhub-skills-publish-workflow.yml` — publishes skills to ClawHub via the official `clawhub` CLI.
+
+- New reusable workflow that discovers every `<skills_dir>/<name>/SKILL.md` (default `skills_dir: .agents/skills`) and publishes each as its own ClawHub skill by driving the official `clawhub` CLI (`skill publish --json`). The CLI derives slug, display name, next version (auto patch-bump off the published version, `1.0.0` for new skills), summary, and file set. Records GitHub provenance via `--source-repo` / `--source-commit` / `--source-path` / `--source-ref`.
+- **Read-only repo access** — the job runs with `contents: read` only; publishing authenticates with the `clawhub_token` secret written to a temp CLI config, not a repo-write scope.
+- **Supply-chain hardened** — `cli_version` is exact-pinned (default `0.23.1`); an age-gate step queries the npm registry and refuses any CLI version published within `min_release_age_days` (default 7) days; install uses `npm install -g clawhub@<ver> --ignore-scripts`; `actions/checkout` and `actions/setup-node` are SHA-pinned.
+- Inputs: `skills_dir`, `registry`, `site`, `tags`, `owner`, `cli_version`, `node_version`, `min_release_age_days`, `dry_run`, `runs_on`. Secret: `clawhub_token` (required). `dry_run: true` resolves + validates without publishing.
+- Note: ClawHub licenses every published skill as `MIT-0` on its side (no per-skill override); the CLI sends the acceptance. The caller repo's own LICENSE is unaffected.
+
 ## v0.8.1 — 2026-07-22
 
 GitHub Actions cache export is now best-effort for every Docker image build
