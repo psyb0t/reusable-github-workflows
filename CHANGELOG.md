@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.11.1 — 2026-07-25
+
+`clawhub-skills-publish-workflow.yml`: fix the version-mirroring query so publishing a brand-new skill no longer fails.
+
+- **Fix — first-time publish of a new skill.** The per-skill version check (`GET /api/v1/skills/<slug>`) ran under `curl -fsS`; for a skill that doesn't exist on ClawHub yet that request 404s, and with `-f` under `set -o pipefail` the step exited non-zero and aborted the whole publish. The query now tolerates the 404 (and any transient error) — the result is treated as an empty current version, so the new-skill / mirror-repo-tag branch runs as intended and the skill is created at the repo tag version. Publishing an existing skill is unchanged.
+
 ## v0.11.0 — 2026-07-24
 
 `clawhub-skills-publish-workflow.yml`: the ClawHub version now follows the repo's git tag when it's ahead, instead of always blind patch-bumping.

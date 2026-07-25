@@ -245,7 +245,11 @@ jobs:
               echo "  version: $INPUT_VERSION (explicit input)"
             elif [ -n "$REPO_VER" ] && is_semver "$REPO_VER"; then
               slug="$(sanitize_slug "$name")"
-              clawhub_ver="$(curl -fsS "$REGISTRY/api/v1/skills/$slug" 2>/dev/null | jq -r '.latestVersion.version // empty')"
+              # A brand-new skill (never published) 404s here; with -f that
+              # makes curl exit 22 and, under `set -o pipefail`, kills the step.
+              # Tolerate any failure -> empty clawhub_ver -> the new-skill /
+              # mirror-repo-tag branch below.
+              clawhub_ver="$(curl -fsS "$REGISTRY/api/v1/skills/$slug" 2>/dev/null | jq -r '.latestVersion.version // empty' 2>/dev/null || true)"
               if [ -z "$clawhub_ver" ] || ver_gt "$REPO_VER" "$clawhub_ver"; then
                 version_args=(--version "$REPO_VER")
                 echo "  version: $REPO_VER (mirrors repo tag; ClawHub was ${clawhub_ver:-<new skill>})"
