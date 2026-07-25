@@ -12,7 +12,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
 - [docker-image-workflow.yml](.github/workflows/docker-image-workflow.yml) — buildx multi-arch / multi-target Docker Hub publish + Grype scan + GitHub Release
 - [go-workflow.yml](.github/workflows/go-workflow.yml) — Go lint / test / `govulncheck` + GitHub Release on tag
 - [python-package-workflow.yml](.github/workflows/python-package-workflow.yml) — Python lint matrix / test / build / `pip-audit` + PyPI publish + GitHub Release on tag
-- [clawhub-skills-publish-workflow.yml](.github/workflows/clawhub-skills-publish-workflow.yml) — publish every skill under a directory to ClawHub via the official `clawhub` CLI (read-only repo access, age-gated install)
+- [clawhub-publish.yml](.github/workflows/clawhub-publish.yml) — publish skills and/or plugins under a directory to ClawHub via the official `clawhub` CLI (read-only repo access, age-gated install). Supersedes `clawhub-skills-publish-workflow.yml`, which is kept as a compat shim.
 
 ## Pinning
 
@@ -352,9 +352,13 @@ jobs:
 
 No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. The `id-token: write` permission on the calling job is required.
 
-## clawhub-skills-publish-workflow.yml
+## clawhub-publish.yml
 
-Publishes every skill under a directory to [ClawHub](https://clawhub.ai) (the OpenClaw skill registry), one ClawHub skill per subfolder.
+Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the OpenClaw skill + plugin registry) via the official `clawhub` CLI. Two independent jobs, each toggled by an input: `publish-skills` (`publish_skills`, default `true`) and `publish-plugins` (`publish_plugins`, default `false`).
+
+> The old name `clawhub-skills-publish-workflow.yml` is kept as a thin pass-through shim to this workflow (plugins off), so existing callers keep working. New callers should use `clawhub-publish.yml`.
+
+**Skills** — one ClawHub skill per subfolder:
 
 - Discovers each `<skills_dir>/<name>/SKILL.md` and runs the official `clawhub` CLI (`skill publish`) against it. The CLI derives the slug, display name, summary, and file set — every regular file in the skill folder except dotfiles and `node_modules`.
 - **Version policy.** On a tag push the ClawHub version **mirrors the git tag** (a leading `v` stripped, e.g. `v1.4.0` → `1.4.0`) — but only when that tag is strictly higher than the skill's current ClawHub version. If ClawHub is already ahead (its version line got out in front of the repo), it falls back to the CLI's automatic patch-bump until a repo tag finally exceeds it, then mirroring takes over. Off a tag (or a non-semver tag) it auto patch-bumps. Set the `version` input to force an explicit version. A version that already exists is treated as "already published", not a failure.
@@ -364,11 +368,21 @@ Publishes every skill under a directory to [ClawHub](https://clawhub.ai) (the Op
 - **License:** ClawHub licenses every published skill as `MIT-0` on its side, with no per-skill override — the CLI sends the acceptance. Your repo's own LICENSE is unaffected; this only governs the copy ClawHub hosts.
 - Set `dry_run: true` to resolve + validate every skill without publishing.
 
+**Plugins** — one ClawHub plugin per subfolder (opt in with `publish_plugins: true`):
+
+- Discovers each `<plugins_dir>/<name>/openclaw.plugin.json`, runs `clawhub package validate` (STATIC only — no `--runtime`/`--allow-execute`, so no plugin code is imported or executed in CI), then `clawhub package publish`.
+- **Version.** ClawHub takes the plugin's `package.json#version` as the release version. On a tag push the git tag (leading `v` stripped) is mirrored into `package.json#version` (and `openclaw.plugin.json#version` if present) before publishing.
+- **No dependency install in CI.** `package publish` packs the source (`npm pack`); a plugin's own dependency tree is resolved by the end user at their install time, never here.
+- Plugin package names are npm-scoped (`@owner/name`); the scope must match a ClawHub owner you control.
+
 ### Inputs
 
 | Input | Type | Default | Description |
 |---|---|---|---|
+| `publish_skills` | boolean | `true` | Publish skills found under `skills_dir`. |
+| `publish_plugins` | boolean | `false` | Publish plugins found under `plugins_dir`. |
 | `skills_dir` | string | `".agents/skills"` | Directory holding one subfolder per skill, each with a `SKILL.md`. |
+| `plugins_dir` | string | `".agents/plugins"` | Directory holding one subfolder per plugin, each with an `openclaw.plugin.json`. |
 | `registry` | string | `"https://clawhub.ai"` | ClawHub registry base URL. |
 | `site` | string | `"https://clawhub.ai"` | ClawHub site base URL (used by the CLI for page links). |
 | `tags` | string | `"latest"` | Comma-separated ClawHub tags applied to the published version. |

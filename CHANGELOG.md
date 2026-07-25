@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.12.0 — 2026-07-25
+
+New `clawhub-publish.yml` — one flow that publishes both **skills and plugins**. The old `clawhub-skills-publish-workflow.yml` name is retained as a thin pass-through shim.
+
+- **New `clawhub-publish.yml`** is the canonical flow, with two independent jobs: `publish-skills` (unchanged behaviour; `publish_skills` input default `true`) and `publish-plugins` (new; `publish_plugins` default `false`).
+- **Plugin path** — publishes every `<plugins_dir>/<name>/openclaw.plugin.json` (default `plugins_dir: .agents/plugins`) as a ClawHub plugin: `clawhub package validate` (STATIC only — no `--runtime`/`--allow-execute`, so no plugin code runs in CI) then `clawhub package publish`. On a tag push, the git tag is mirrored into each plugin's `package.json#version` (ClawHub takes the package version as the release version). The plugin path never installs a plugin's own dependencies in CI — `package publish` packs the source only.
+- **New inputs:** `publish_skills`, `publish_plugins`, `plugins_dir`. Same supply-chain hardening as the skills path (exact-pinned, age-gated CLI; `npm install --ignore-scripts`; SHA-pinned actions; `contents: read`).
+- **Backward compatible:** `clawhub-skills-publish-workflow.yml` now forwards to `clawhub-publish.yml` with plugins off, so existing `@master` callers keep working unchanged. Migrate to `clawhub-publish.yml` when convenient.
+
 ## v0.11.1 — 2026-07-25
 
 `clawhub-skills-publish-workflow.yml`: fix the version-mirroring query so publishing a brand-new skill no longer fails.

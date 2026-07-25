@@ -1,309 +1,82 @@
-name: ClawHub Skills Publish Workflow
+name: ClawHub Skills Publish Workflow (compat shim)
 
-# Publishes every skill under `inputs.skills_dir` (default `.agents/skills/<name>/`,
-# one subdir per skill, each containing a SKILL.md) to ClawHub — the public
-# skill registry for OpenClaw — as its own ClawHub skill/slug.
+# DEPRECATED NAME — kept as a thin pass-through so existing callers that still
+# reference `clawhub-skills-publish-workflow.yml@master` keep working. The real
+# flow now lives in `clawhub-publish.yml` (skills + plugins). New callers should
+# use `clawhub-publish.yml` directly; migrate off this shim when convenient.
 #
-# Drives the OFFICIAL `clawhub` CLI (npm) directly — no prebuilt marketplace
-# publish action, and NOT ClawHub's own reusable `skill-publish.yml`. This repo
-# owns the whole flow, so it isn't hostage to a third party's action changing
-# or disappearing. The CLI itself owns slug sanitization, automatic version
-# bumping, the file-inclusion filter, and size limits — we don't reimplement
-# any of that.
-#
-# Repo access is READ-ONLY: the job runs with `contents: read` and nothing else.
-# Publishing authenticates purely with the ClawHub token, not a repo-write scope.
-#
-# Supply-chain discipline (per this org's dependency rules):
-#   - CLI version is EXACT-pinned (`cli_version`, no `@latest`).
-#   - An age-gate step refuses any CLI version published within the last
-#     `min_release_age_days` days (fresh releases are the primary hijack window).
-#   - `npm install -g … --ignore-scripts` — install-time scripts are the #1 JS
-#     supply-chain vector; clawhub ships prebuilt `dist/` and needs none.
-#   - Every GitHub Action is pinned by full commit SHA, not a mutable tag.
-#
-# License note: ClawHub requires `acceptLicenseTerms` on publish (the CLI sends
-# it) and its terms license every published skill as MIT-0 there, with no
-# per-skill override. Your source repo's own LICENSE is unaffected — this only
-# governs the copy ClawHub hosts.
-#
-# Example caller workflow:
-#
-#   on:
-#     push:
-#       tags: ["v*"]
-#   jobs:
-#     publish-skills:
-#       uses: psyb0t/reusable-github-workflows/.github/workflows/clawhub-skills-publish-workflow.yml@<sha>
-#       secrets:
-#         clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
+# This forwards to the local clawhub-publish.yml with plugins OFF, so behaviour
+# for skill-only callers is identical to before the rename.
 
 on:
   workflow_call:
     inputs:
       skills_dir:
-        description: "Directory containing one subfolder per skill, each with a SKILL.md"
         required: false
         type: string
         default: ".agents/skills"
-
       registry:
-        description: "ClawHub registry base URL"
         required: false
         type: string
         default: "https://clawhub.ai"
-
       site:
-        description: "ClawHub site base URL (used by the CLI for page links)"
         required: false
         type: string
         default: "https://clawhub.ai"
-
       tags:
-        description: "Comma-separated ClawHub tags applied to the published version"
         required: false
         type: string
         default: "latest"
-
       owner:
-        description: "Publisher handle to publish under (org-scoped). Empty = infer from the token's identity."
         required: false
         type: string
         default: ""
-
       version:
-        description: "Explicit ClawHub version to publish (semver). Empty = mirror the git tag on a tag push (strip a leading 'v'), else let the CLI auto-bump the patch. Must be a version that doesn't already exist on ClawHub."
         required: false
         type: string
         default: ""
-
       cli_version:
-        description: "EXACT clawhub CLI version to install (no ranges). Bump consciously; the age-gate re-checks on bump."
         required: false
         type: string
         default: "0.23.1"
-
       node_version:
-        description: "Node.js major version for the CLI (clawhub requires >=22)"
         required: false
         type: string
         default: "22"
-
       min_release_age_days:
-        description: "Refuse to install a clawhub CLI version published more recently than this many days ago"
         required: false
         type: number
         default: 7
-
       dry_run:
-        description: "Run the CLI in --dry-run mode (resolve + validate, but don't publish)"
         required: false
         type: boolean
         default: false
-
       runs_on:
-        description: "Runner to use (e.g. ubuntu-latest, self-hosted)"
         required: false
         type: string
         default: "ubuntu-latest"
-
     secrets:
       clawhub_token:
-        description: "ClawHub API token (clh_...) with publish scope"
         required: true
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
-# Least privilege at the top level; the one job opts into read-only repo access.
 permissions: {}
 
 jobs:
-  publish:
-    runs-on: ${{ inputs.runs_on }}
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code (read-only)
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ inputs.node_version }}
-
-      - name: Age-gate + install clawhub CLI
-        env:
-          CLI_VERSION: ${{ inputs.cli_version }}
-          MIN_AGE_DAYS: ${{ inputs.min_release_age_days }}
-        run: |
-          set -euo pipefail
-
-          # Age-gate: refuse a CLI version published within the danger window.
-          # The npm registry's `time` map carries each version's publish ISO ts.
-          published="$(curl -fsS "https://registry.npmjs.org/clawhub" \
-            | jq -r --arg v "$CLI_VERSION" '.time[$v] // empty')"
-          if [ -z "$published" ]; then
-            echo "::error::clawhub@$CLI_VERSION not found on the npm registry"
-            exit 1
-          fi
-          pub_epoch="$(date -u -d "$published" +%s)"
-          cutoff_epoch="$(date -u -d "$MIN_AGE_DAYS days ago" +%s)"
-          if [ "$pub_epoch" -gt "$cutoff_epoch" ]; then
-            echo "::error::clawhub@$CLI_VERSION was published $published — within the ${MIN_AGE_DAYS}-day supply-chain window; refusing to install"
-            exit 1
-          fi
-          echo "clawhub@$CLI_VERSION published $published — clears the ${MIN_AGE_DAYS}-day age gate"
-
-          # Exact pin + --ignore-scripts (no lifecycle scripts run; clawhub is
-          # prebuilt and needs none). npm verifies the registry integrity hash.
-          npm install -g "clawhub@${CLI_VERSION}" --ignore-scripts
-
-          if ! command -v clawhub >/dev/null 2>&1; then
-            echo "::error::clawhub CLI not on PATH after install"
-            exit 1
-          fi
-          echo "installed: $(clawhub --version 2>/dev/null || echo "clawhub@${CLI_VERSION}")"
-
-      - name: Publish skills to ClawHub
-        env:
-          CLAWHUB_TOKEN: ${{ secrets.clawhub_token }}
-          SKILLS_DIR: ${{ inputs.skills_dir }}
-          REGISTRY: ${{ inputs.registry }}
-          SITE: ${{ inputs.site }}
-          TAGS: ${{ inputs.tags }}
-          OWNER: ${{ inputs.owner }}
-          INPUT_VERSION: ${{ inputs.version }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          SOURCE_REPO: ${{ github.repository }}
-          SOURCE_REF: ${{ github.ref }}
-          SOURCE_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          if [ ! -d "$SKILLS_DIR" ]; then
-            echo "::error::skills_dir '$SKILLS_DIR' does not exist"
-            exit 1
-          fi
-
-          # One skill = one <name>/SKILL.md directly under $SKILLS_DIR.
-          skill_dirs=()
-          while IFS= read -r -d '' md; do
-            skill_dirs+=("$(dirname "$md")")
-          done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -iname "SKILL.md" -print0 | sort -z)
-
-          if [ "${#skill_dirs[@]}" -eq 0 ]; then
-            echo "::error::no SKILL.md found under $SKILLS_DIR/<name>/SKILL.md"
-            exit 1
-          fi
-
-          echo "Found ${#skill_dirs[@]} skill(s) under $SKILLS_DIR:"
-          printf '  - %s\n' "${skill_dirs[@]}"
-
-          # Write the CLI's auth config (registry + token) to a temp file and
-          # point the CLI at it via CLAWHUB_CONFIG_PATH — no interactive login,
-          # and the token never lands in a committed/persisted config.
-          config_file="$(mktemp)"
-          trap 'rm -f "$config_file"' EXIT
-          jq -nc --arg registry "$REGISTRY" --arg token "$CLAWHUB_TOKEN" \
-            '{registry: $registry, token: $token}' > "$config_file"
-          export CLAWHUB_CONFIG_PATH="$config_file"
-
-          # Version policy (per skill):
-          #  - explicit `version` input wins.
-          #  - else on a tag push, MIRROR the repo tag (strip a leading 'v') —
-          #    but ONLY when it's strictly higher than the skill's CURRENT
-          #    ClawHub version. If ClawHub is already ahead (its version line got
-          #    out in front of the repo), fall back to the CLI's auto patch-bump
-          #    until a repo tag finally exceeds it, then mirroring takes over.
-          #  - else (no tag, no input) auto patch-bump.
-          sanitize_slug() {
-            printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
-              | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
-          }
-          is_semver() { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; }
-          # ver_gt A B  -> true when A > B in version order (sort -V).
-          ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
-
-          REPO_VER=""
-          case "$SOURCE_REF" in
-            refs/tags/*) REPO_VER="${SOURCE_REF#refs/tags/}"; REPO_VER="${REPO_VER#v}" ;;
-          esac
-
-          published=()
-          failed=()
-
-          for dir in "${skill_dirs[@]}"; do
-            name="$(basename "$dir")"
-            echo "── $name ──────────────────────────────"
-
-            # Decide this skill's version per the policy above.
-            version_args=()
-            if [ -n "$INPUT_VERSION" ]; then
-              version_args=(--version "$INPUT_VERSION")
-              echo "  version: $INPUT_VERSION (explicit input)"
-            elif [ -n "$REPO_VER" ] && is_semver "$REPO_VER"; then
-              slug="$(sanitize_slug "$name")"
-              # A brand-new skill (never published) 404s here; with -f that
-              # makes curl exit 22 and, under `set -o pipefail`, kills the step.
-              # Tolerate any failure -> empty clawhub_ver -> the new-skill /
-              # mirror-repo-tag branch below.
-              clawhub_ver="$(curl -fsS "$REGISTRY/api/v1/skills/$slug" 2>/dev/null | jq -r '.latestVersion.version // empty' 2>/dev/null || true)"
-              if [ -z "$clawhub_ver" ] || ver_gt "$REPO_VER" "$clawhub_ver"; then
-                version_args=(--version "$REPO_VER")
-                echo "  version: $REPO_VER (mirrors repo tag; ClawHub was ${clawhub_ver:-<new skill>})"
-              else
-                echo "  version: auto patch-bump — repo tag $REPO_VER is not above ClawHub's $clawhub_ver yet"
-              fi
-            else
-              echo "  version: auto patch-bump (no tag / not semver)"
-            fi
-
-            # Global flags (--site/--registry) precede the subcommand. The CLI
-            # derives slug/displayName/summary/files itself; version comes from
-            # --version when we mirror the tag, else the CLI auto-bumps the patch.
-            # --source-* records GitHub provenance on the published version.
-            args=(--site "$SITE" --registry "$REGISTRY"
-              skill publish "$dir" --json
-              --source-repo "$SOURCE_REPO"
-              --source-commit "$SOURCE_COMMIT"
-              --source-path "$dir")
-            [ -n "$SOURCE_REF" ] && args+=(--source-ref "$SOURCE_REF")
-            [ -n "$OWNER" ] && args+=(--owner "$OWNER")
-            [ -n "$TAGS" ] && args+=(--tags "$TAGS")
-            [ "${#version_args[@]}" -gt 0 ] && args+=("${version_args[@]}")
-            [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
-
-            out_file="$(mktemp)"
-            if clawhub "${args[@]}" > "$out_file" 2>/tmp/clawhub.err; then
-              slug="$(jq -r '.slug // empty' "$out_file")"
-              version="$(jq -r '.version // empty' "$out_file")"
-              status="$(jq -r '.status // "unknown"' "$out_file")"
-              echo "  ${slug:-$name}@${version:-?} — $status"
-              published+=("${slug:-$name}@${version:-?} ($status)")
-            else
-              err="$(cat /tmp/clawhub.err)"
-              body="$(cat "$out_file")"
-              # A re-run of the same tag tries to publish a version that already
-              # exists — treat that as "already published", not a failure.
-              if printf '%s%s' "$err" "$body" | grep -qiE "already exists"; then
-                echo "  $name — already published at this version; skipping"
-                published+=("$name (already published)")
-              else
-                echo "::error::$name — publish failed: ${err:-$body}"
-                failed+=("$name")
-              fi
-            fi
-            rm -f "$out_file"
-          done
-
-          echo ""
-          echo "═══════════════ Summary ═══════════════"
-          echo "Processed (${#published[@]}):"
-          printf '  ✓ %s\n' "${published[@]}"
-          if [ "${#failed[@]}" -gt 0 ]; then
-            echo "Failed (${#failed[@]}):"
-            printf '  ✗ %s\n' "${failed[@]}"
-            exit 1
-          fi
+  forward:
+    uses: ./.github/workflows/clawhub-publish.yml
+    with:
+      publish_skills: true
+      publish_plugins: false
+      skills_dir: ${{ inputs.skills_dir }}
+      registry: ${{ inputs.registry }}
+      site: ${{ inputs.site }}
+      tags: ${{ inputs.tags }}
+      owner: ${{ inputs.owner }}
+      version: ${{ inputs.version }}
+      cli_version: ${{ inputs.cli_version }}
+      node_version: ${{ inputs.node_version }}
+      min_release_age_days: ${{ inputs.min_release_age_days }}
+      dry_run: ${{ inputs.dry_run }}
+      runs_on: ${{ inputs.runs_on }}
+    secrets:
+      clawhub_token: ${{ secrets.clawhub_token }}
