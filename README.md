@@ -39,7 +39,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`docker-image-workflow.yml`](#docker-image-workflowyml) | Buildx multi-arch / multi-target Docker Hub publish + SBOM/provenance + Grype scan → Security tab + GitHub Release. |
 | [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
-| [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. Supersedes `clawhub-skills-publish-workflow.yml` (kept as a compat shim). |
+| [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 
 ## Pinning
 
@@ -382,8 +382,6 @@ No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. 
 ## clawhub-publish.yml
 
 Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the OpenClaw skill + plugin registry) via the official `clawhub` CLI. **Both halves default on** (`publish_skills` and `publish_plugins`, both `true`) — this org ships skills and plugins out of the same repos, so callers don't repeat the wiring; a repo missing one dir (or with an empty one) skips that half cleanly instead of failing. Each half runs as **validate → publish**: a `validate-*` job runs whenever the workflow is *called* (skill `--dry-run` resolve / static plugin Inspector — no plugin code executes), and the matching `publish-*` job runs only on a tag ref AND only after its validation passed. Dropping a caller's `if: tags` gate therefore gives validation on every push while publishing stays tag-only.
-
-> The old name `clawhub-skills-publish-workflow.yml` is kept as a thin pass-through shim to this workflow (plugins off), so existing callers keep working. New callers should use `clawhub-publish.yml`.
 
 **Skills** — one ClawHub skill per subfolder:
 

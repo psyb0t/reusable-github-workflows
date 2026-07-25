@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.0 — 2026-07-25
+
+Removed the deprecated `clawhub-skills-publish-workflow.yml` compat shim.
+
+- **Removed `clawhub-skills-publish-workflow.yml`.** The pass-through shim (added in v0.12.0 to preserve the pre-rename workflow name) is deleted — call `clawhub-publish.yml` directly. Its nested reusable-workflow call was also a startup-failure risk for callers. **Breaking** for any caller still referencing `clawhub-skills-publish-workflow.yml@…`: switch the `uses:` to `clawhub-publish.yml` — with the defaults it publishes both skills and plugins, and a repo missing one dir skips that half cleanly, so no `with:` block is needed for a skills-only repo.
+
 ## v0.13.0 — 2026-07-25
 
 `clawhub-publish.yml`: both halves default ON, missing dirs skip cleanly, and a validate stage now gates every publish.
