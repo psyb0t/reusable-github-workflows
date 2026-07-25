@@ -1,26 +1,53 @@
 # Reusable GitHub Workflows
 
-A small set of opinionated reusable GitHub Actions workflows for shipping Go, Python, and Docker projects, plus a PR-gate that closes pull requests from non-collaborators.
-
-Every third-party action used inside these workflows is pinned by full commit SHA (no floating tags). Job permissions are scoped to the minimum each step needs. Concurrency groups cancel superseded runs (except for tag pushes, which always complete).
+Opinionated, security-hardened reusable GitHub Actions workflows for shipping
+Go, Python, and Docker projects — plus ClawHub skill/plugin publishing and a
+gate that closes PRs from non-collaborators. Add one `uses:` line to a caller
+repo and inherit a full **lint → test → scan → build → publish → release**
+pipeline that lives in one versioned place instead of being copy-pasted across
+every repo.
 
 See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
 
+## Contents
+
+- [Shared conventions](#shared-conventions)
+- [Pinning](#pinning)
+- [Workflows](#workflows)
+  - [collaborators-only-workflow.yml](#collaborators-only-workflowyml)
+  - [docker-image-workflow.yml](#docker-image-workflowyml)
+  - [go-workflow.yml](#go-workflowyml)
+  - [python-package-workflow.yml](#python-package-workflowyml)
+  - [clawhub-publish.yml](#clawhub-publishyml)
+- [License](#license)
+
+## Shared conventions
+
+Every workflow here holds to the same rules, so a caller inherits them for free:
+
+- **Third-party actions pinned by full commit SHA** — never a floating tag, so a re-pointed or compromised upstream tag can't silently change what runs.
+- **Least-privilege permissions** — the top level is `permissions: {}`; each job opts in to only the scopes its steps need (`contents: read`, `security-events: write`, …).
+- **Concurrency groups cancel superseded runs** — a newer push on the same ref supersedes an in-flight run, except tag pushes, which always run to completion.
+- **Triggered from `push`** — you wire `on: [push]`; the workflow itself decides what to act on (branch vs. tag) and no-ops on refs it doesn't handle.
+- **Supply-chain discipline on any tooling install** — exact version pins, an age-gate that refuses freshly-published releases, and `npm install --ignore-scripts`.
+
 ## Workflows
 
-- [collaborators-only-workflow.yml](.github/workflows/collaborators-only-workflow.yml) — close PRs from non-collaborators (with optional allow-extras + lock)
-- [docker-image-workflow.yml](.github/workflows/docker-image-workflow.yml) — buildx multi-arch / multi-target Docker Hub publish + Grype scan + GitHub Release
-- [go-workflow.yml](.github/workflows/go-workflow.yml) — Go lint / test / `govulncheck` + GitHub Release on tag
-- [python-package-workflow.yml](.github/workflows/python-package-workflow.yml) — Python lint matrix / test / build / `pip-audit` + PyPI publish + GitHub Release on tag
-- [clawhub-publish.yml](.github/workflows/clawhub-publish.yml) — publish skills and/or plugins under a directory to ClawHub via the official `clawhub` CLI (read-only repo access, age-gated install). Supersedes `clawhub-skills-publish-workflow.yml`, which is kept as a compat shim.
+| Workflow | What it does |
+|---|---|
+| [`collaborators-only-workflow.yml`](#collaborators-only-workflowyml) | Close (and optionally lock) PRs from non-collaborators. |
+| [`docker-image-workflow.yml`](#docker-image-workflowyml) | Buildx multi-arch / multi-target Docker Hub publish + SBOM/provenance + Grype scan → Security tab + GitHub Release. |
+| [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
+| [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
+| [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. Supersedes `clawhub-skills-publish-workflow.yml` (kept as a compat shim). |
 
 ## Pinning
 
-The examples in this README use `@master` for readability. **Do not use `@master` in production** — pin to a tag (`@v0.6.0`) or full commit SHA. `@master` follows whatever lands here without warning.
+The examples below use `@master` for readability. **Don't use `@master` in production** — pin to a release tag (`@v0.13.0`) or a full commit SHA. `@master` follows whatever lands here without warning.
 
 ```yaml
-# Recommended
-uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@v0.6.0
+# Recommended — pin to a release tag
+uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@v0.13.0
 
 # Stricter — pin to a specific SHA (immune to tag re-pointing)
 uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@<full-40-char-sha>
@@ -354,7 +381,7 @@ No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. 
 
 ## clawhub-publish.yml
 
-Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the OpenClaw skill + plugin registry) via the official `clawhub` CLI. Two independent jobs, each toggled by an input: `publish-skills` (`publish_skills`, default `true`) and `publish-plugins` (`publish_plugins`, default `false`).
+Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the OpenClaw skill + plugin registry) via the official `clawhub` CLI. **Both halves default on** (`publish_skills` and `publish_plugins`, both `true`) — this org ships skills and plugins out of the same repos, so callers don't repeat the wiring; a repo missing one dir (or with an empty one) skips that half cleanly instead of failing. Each half runs as **validate → publish**: a `validate-*` job runs whenever the workflow is *called* (skill `--dry-run` resolve / static plugin Inspector — no plugin code executes), and the matching `publish-*` job runs only on a tag ref AND only after its validation passed. Dropping a caller's `if: tags` gate therefore gives validation on every push while publishing stays tag-only.
 
 > The old name `clawhub-skills-publish-workflow.yml` is kept as a thin pass-through shim to this workflow (plugins off), so existing callers keep working. New callers should use `clawhub-publish.yml`.
 
@@ -368,7 +395,7 @@ Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the 
 - **License:** ClawHub licenses every published skill as `MIT-0` on its side, with no per-skill override — the CLI sends the acceptance. Your repo's own LICENSE is unaffected; this only governs the copy ClawHub hosts.
 - Set `dry_run: true` to resolve + validate every skill without publishing.
 
-**Plugins** — one ClawHub plugin per subfolder (opt in with `publish_plugins: true`):
+**Plugins** — one ClawHub plugin per subfolder (`publish_plugins`, default `true`):
 
 - Discovers each `<plugins_dir>/<name>/openclaw.plugin.json`, runs `clawhub package validate` (STATIC only — no `--runtime`/`--allow-execute`, so no plugin code is imported or executed in CI), then `clawhub package publish`.
 - **Version.** ClawHub takes the plugin's `package.json#version` as the release version. On a tag push the git tag (leading `v` stripped) is mirrored into `package.json#version` (and `openclaw.plugin.json#version` if present) before publishing.
@@ -380,7 +407,7 @@ Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the 
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `publish_skills` | boolean | `true` | Publish skills found under `skills_dir`. |
-| `publish_plugins` | boolean | `false` | Publish plugins found under `plugins_dir`. |
+| `publish_plugins` | boolean | `true` | Publish plugins found under `plugins_dir`. |
 | `skills_dir` | string | `".agents/skills"` | Directory holding one subfolder per skill, each with a `SKILL.md`. |
 | `plugins_dir` | string | `".agents/plugins"` | Directory holding one subfolder per plugin, each with an `openclaw.plugin.json`. |
 | `registry` | string | `"https://clawhub.ai"` | ClawHub registry base URL. |
@@ -403,20 +430,19 @@ Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the 
 ### Example
 
 ```yaml
-name: publish-skills
-on:
-  push:
-    tags: ["v*"]
+name: pipeline
+on: [push]
 
 jobs:
   clawhub:
-    uses: psyb0t/reusable-github-workflows/.github/workflows/clawhub-skills-publish-workflow.yml@master
-    with:
-      skills_dir: .agents/skills
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: psyb0t/reusable-github-workflows/.github/workflows/clawhub-publish.yml@master
     secrets:
       clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
 ```
 
+With the defaults, that publishes every skill under `.agents/skills/` and every plugin under `.agents/plugins/` on tag pushes — no `with:` block needed. Drop the `if:` line to also validate skills + plugins on every push (publishing still fires only on tags, enforced inside the workflow).
+
 ## License
 
-See [LICENSE](LICENSE).
+[WTFPL](http://www.wtfpl.net/) — Do What The Fuck You Want To Public License. See [LICENSE](LICENSE).

@@ -9,8 +9,17 @@ name: ClawHub Publish Workflow
 # marketplace action. This repo owns the whole flow so it isn't hostage to a
 # third party's action changing or disappearing.
 #
-# Toggle each half with `publish_skills` / `publish_plugins`. A caller that only
-# has skills leaves the defaults (skills on, plugins off) and nothing changes.
+# Toggle each half with `publish_skills` / `publish_plugins` — BOTH default ON,
+# because this org publishes skills AND plugins out of the same repos and doesn't
+# want to repeat the wiring in every caller. A repo that has only one of the two
+# (or an empty dir) skips the missing half cleanly instead of failing; set the
+# corresponding input to false only if you want to force a half off.
+#
+# Each half runs as validate → publish: a `validate-*` job runs whenever the
+# workflow is CALLED (dry-run for skills, static Plugin Inspector for plugins —
+# no plugin code executes), and the matching `publish-*` job runs only on a tag
+# ref AND only after its validation passed. So dropping a caller's `if: tags`
+# gate gives validation on every push while publishing stays tag-only.
 #
 # Repo access is READ-ONLY (`contents: read`). Publishing authenticates purely
 # with the ClawHub token, never a repo-write scope.
@@ -51,7 +60,7 @@ on:
         description: "Publish plugins found under plugins_dir"
         required: false
         type: boolean
-        default: false
+        default: true
 
       skills_dir:
         description: "Directory containing one subfolder per skill, each with a SKILL.md"
@@ -138,8 +147,106 @@ concurrency:
 permissions: {}
 
 jobs:
-  publish-skills:
+  # Validation gate — runs whenever the workflow is CALLED (not tag-gated here),
+  # so a caller that drops its tag `if:` gets skill validation on every push.
+  # `skill publish --dry-run` resolves + validates the folder without publishing.
+  validate-skills:
     if: ${{ inputs.publish_skills }}
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code (read-only)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Age-gate + install clawhub CLI
+        env:
+          CLI_VERSION: ${{ inputs.cli_version }}
+          MIN_AGE_DAYS: ${{ inputs.min_release_age_days }}
+        run: |
+          set -euo pipefail
+          published="$(curl -fsS "https://registry.npmjs.org/clawhub" \
+            | jq -r --arg v "$CLI_VERSION" '.time[$v] // empty')"
+          if [ -z "$published" ]; then
+            echo "::error::clawhub@$CLI_VERSION not found on the npm registry"; exit 1
+          fi
+          pub_epoch="$(date -u -d "$published" +%s)"
+          cutoff_epoch="$(date -u -d "$MIN_AGE_DAYS days ago" +%s)"
+          if [ "$pub_epoch" -gt "$cutoff_epoch" ]; then
+            echo "::error::clawhub@$CLI_VERSION was published $published — within the ${MIN_AGE_DAYS}-day supply-chain window; refusing to install"; exit 1
+          fi
+          echo "clawhub@$CLI_VERSION published $published — clears the ${MIN_AGE_DAYS}-day age gate"
+          npm install -g "clawhub@${CLI_VERSION}" --ignore-scripts
+          command -v clawhub >/dev/null 2>&1 || { echo "::error::clawhub CLI not on PATH"; exit 1; }
+          echo "installed: $(clawhub --version 2>/dev/null || echo "clawhub@${CLI_VERSION}")"
+
+      - name: Validate skills (dry-run)
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.clawhub_token }}
+          SKILLS_DIR: ${{ inputs.skills_dir }}
+          REGISTRY: ${{ inputs.registry }}
+          SITE: ${{ inputs.site }}
+          OWNER: ${{ inputs.owner }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$SKILLS_DIR" ]; then
+            echo "skills_dir '$SKILLS_DIR' does not exist — nothing to validate; skipping"
+            exit 0
+          fi
+
+          skill_dirs=()
+          while IFS= read -r -d '' md; do
+            skill_dirs+=("$(dirname "$md")")
+          done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -iname "SKILL.md" -print0 | sort -z)
+
+          if [ "${#skill_dirs[@]}" -eq 0 ]; then
+            echo "no SKILL.md under $SKILLS_DIR/<name>/SKILL.md — nothing to validate; skipping"
+            exit 0
+          fi
+
+          config_file="$(mktemp)"
+          trap 'rm -f "$config_file"' EXIT
+          jq -nc --arg registry "$REGISTRY" --arg token "$CLAWHUB_TOKEN" \
+            '{registry: $registry, token: $token}' > "$config_file"
+          export CLAWHUB_CONFIG_PATH="$config_file"
+
+          failed=()
+          for dir in "${skill_dirs[@]}"; do
+            name="$(basename "$dir")"
+            echo "── validate $name ──"
+            args=(--site "$SITE" --registry "$REGISTRY"
+              skill publish "$dir" --dry-run
+              --source-repo "$SOURCE_REPO"
+              --source-commit "$SOURCE_COMMIT"
+              --source-path "$dir")
+            [ -n "$SOURCE_REF" ] && args+=(--source-ref "$SOURCE_REF")
+            [ -n "$OWNER" ] && args+=(--owner "$OWNER")
+            if clawhub "${args[@]}" >/tmp/clawhub.val 2>&1; then
+              echo "  ✓ $name valid"
+            else
+              echo "::error::$name — skill validation (dry-run) failed:"; cat /tmp/clawhub.val
+              failed+=("$name")
+            fi
+          done
+
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::skill validation failed for: ${failed[*]}"
+            exit 1
+          fi
+          echo "All ${#skill_dirs[@]} skill(s) valid."
+
+  publish-skills:
+    if: ${{ inputs.publish_skills && startsWith(github.ref, 'refs/tags/') }}
+    needs: [validate-skills]
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
@@ -201,8 +308,8 @@ jobs:
           set -euo pipefail
 
           if [ ! -d "$SKILLS_DIR" ]; then
-            echo "::error::skills_dir '$SKILLS_DIR' does not exist"
-            exit 1
+            echo "skills_dir '$SKILLS_DIR' does not exist — no skills to publish; skipping"
+            exit 0
           fi
 
           skill_dirs=()
@@ -211,8 +318,8 @@ jobs:
           done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -iname "SKILL.md" -print0 | sort -z)
 
           if [ "${#skill_dirs[@]}" -eq 0 ]; then
-            echo "::error::no SKILL.md found under $SKILLS_DIR/<name>/SKILL.md"
-            exit 1
+            echo "no SKILL.md under $SKILLS_DIR/<name>/SKILL.md — no skills to publish; skipping"
+            exit 0
           fi
 
           echo "Found ${#skill_dirs[@]} skill(s) under $SKILLS_DIR:"
@@ -303,8 +410,81 @@ jobs:
             exit 1
           fi
 
-  publish-plugins:
+  # Validation gate — runs whenever the workflow is CALLED (not tag-gated here).
+  # `package validate` is the STATIC Plugin Inspector (no --runtime, no token,
+  # no plugin code executed), so it is safe to run on every push.
+  validate-plugins:
     if: ${{ inputs.publish_plugins }}
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code (read-only)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Age-gate + install clawhub CLI
+        env:
+          CLI_VERSION: ${{ inputs.cli_version }}
+          MIN_AGE_DAYS: ${{ inputs.min_release_age_days }}
+        run: |
+          set -euo pipefail
+          published="$(curl -fsS "https://registry.npmjs.org/clawhub" \
+            | jq -r --arg v "$CLI_VERSION" '.time[$v] // empty')"
+          if [ -z "$published" ]; then
+            echo "::error::clawhub@$CLI_VERSION not found on the npm registry"; exit 1
+          fi
+          pub_epoch="$(date -u -d "$published" +%s)"
+          cutoff_epoch="$(date -u -d "$MIN_AGE_DAYS days ago" +%s)"
+          if [ "$pub_epoch" -gt "$cutoff_epoch" ]; then
+            echo "::error::clawhub@$CLI_VERSION was published $published — within the ${MIN_AGE_DAYS}-day supply-chain window; refusing to install"; exit 1
+          fi
+          echo "clawhub@$CLI_VERSION published $published — clears the ${MIN_AGE_DAYS}-day age gate"
+          npm install -g "clawhub@${CLI_VERSION}" --ignore-scripts
+          command -v clawhub >/dev/null 2>&1 || { echo "::error::clawhub CLI not on PATH"; exit 1; }
+          echo "installed: $(clawhub --version 2>/dev/null || echo "clawhub@${CLI_VERSION}")"
+
+      - name: Validate plugins (static Plugin Inspector)
+        env:
+          PLUGINS_DIR: ${{ inputs.plugins_dir }}
+          REGISTRY: ${{ inputs.registry }}
+          SITE: ${{ inputs.site }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$PLUGINS_DIR" ]; then
+            echo "plugins_dir '$PLUGINS_DIR' does not exist — nothing to validate; skipping"; exit 0
+          fi
+          plugin_dirs=()
+          while IFS= read -r -d '' mf; do
+            plugin_dirs+=("$(dirname "$mf")")
+          done < <(find "$PLUGINS_DIR" -mindepth 2 -maxdepth 2 -name "openclaw.plugin.json" -print0 | sort -z)
+          if [ "${#plugin_dirs[@]}" -eq 0 ]; then
+            echo "no openclaw.plugin.json under $PLUGINS_DIR/<name>/openclaw.plugin.json — nothing to validate; skipping"; exit 0
+          fi
+          failed=()
+          for dir in "${plugin_dirs[@]}"; do
+            name="$(basename "$dir")"
+            echo "── validate $name ──"
+            if clawhub package validate "$dir" --site "$SITE" --registry "$REGISTRY"; then
+              echo "  ✓ $name valid"
+            else
+              echo "::error::$name — Plugin Inspector validation failed"
+              failed+=("$name")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::plugin validation failed for: ${failed[*]}"
+            exit 1
+          fi
+          echo "All ${#plugin_dirs[@]} plugin(s) valid."
+
+  publish-plugins:
+    if: ${{ inputs.publish_plugins && startsWith(github.ref, 'refs/tags/') }}
+    needs: [validate-plugins]
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
@@ -353,7 +533,7 @@ jobs:
           set -euo pipefail
 
           if [ ! -d "$PLUGINS_DIR" ]; then
-            echo "::error::plugins_dir '$PLUGINS_DIR' does not exist"; exit 1
+            echo "plugins_dir '$PLUGINS_DIR' does not exist — no plugins to publish; skipping"; exit 0
           fi
 
           # One plugin = one <name>/openclaw.plugin.json directly under $PLUGINS_DIR.
@@ -363,7 +543,7 @@ jobs:
           done < <(find "$PLUGINS_DIR" -mindepth 2 -maxdepth 2 -name "openclaw.plugin.json" -print0 | sort -z)
 
           if [ "${#plugin_dirs[@]}" -eq 0 ]; then
-            echo "::error::no openclaw.plugin.json found under $PLUGINS_DIR/<name>/openclaw.plugin.json"; exit 1
+            echo "no openclaw.plugin.json under $PLUGINS_DIR/<name>/openclaw.plugin.json — no plugins to publish; skipping"; exit 0
           fi
 
           echo "Found ${#plugin_dirs[@]} plugin(s) under $PLUGINS_DIR:"

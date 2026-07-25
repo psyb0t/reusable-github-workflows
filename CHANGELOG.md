@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.13.0 — 2026-07-25
+
+`clawhub-publish.yml`: both halves default ON, missing dirs skip cleanly, and a validate stage now gates every publish.
+
+- **`publish_plugins` now defaults `true`** (was `false`). Skills and plugins both publish by default, so a caller that ships both no longer passes a `with:` block at all. `skills_dir` / `plugins_dir` keep their `.agents/skills` / `.agents/plugins` defaults.
+- **Missing/empty dir = clean skip, not failure.** When `skills_dir` or `plugins_dir` is absent (or contains no `SKILL.md` / `openclaw.plugin.json`), that half logs and exits 0 instead of erroring — so a skills-only or plugin-only repo can safely leave both halves on.
+- **New validate stage.** Each half runs `validate-*` → `publish-*`: `validate-skills` runs `clawhub skill publish --dry-run` per skill; `validate-plugins` runs the static `clawhub package validate` (Plugin Inspector — no `--runtime`, no token, no plugin code executed) per plugin. Each `publish-*` job `needs:` its matching validate job, so a malformed skill/plugin fails validation before anything is published.
+- **Publish jobs are internally tag-gated.** `publish-skills` / `publish-plugins` now also require `startsWith(github.ref, 'refs/tags/')`. Validation runs whenever the workflow is *called*; publishing only fires on a tag ref. A caller can drop its own `if: tags` gate to get validation on every push while publishing stays tag-only. **Behavior note for existing callers:** publishing now requires a tag ref even if the caller doesn't gate — an intentional guardrail against publishing off a branch.
+
 ## v0.12.0 — 2026-07-25
 
 New `clawhub-publish.yml` — one flow that publishes both **skills and plugins**. The old `clawhub-skills-publish-workflow.yml` name is retained as a thin pass-through shim.
