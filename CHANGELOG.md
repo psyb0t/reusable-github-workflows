@@ -4,6 +4,14 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.16.0 — 2026-07-26
+
+`go-workflow.yml`: optional Codecov coverage upload.
+
+- **New `codecov_enabled` input (default `false`).** When set, the `test` job uploads the coverage profile that `test_command` leaves behind to Codecov after the tests run — no second test run. Requires the new `codecov_token` secret. Additive and opt-in: existing callers that don't set it are unchanged.
+- **New `coverage_file` input (default `coverage.txt`).** Path to the coverage profile `test_command` writes, so a repo emitting a differently-named file (e.g. a mocks-filtered profile) can point at it.
+- **New optional `codecov_token` secret (`required: false`).** Passed to `codecov/codecov-action` (SHA-pinned `v5.5.5`) as the upload token; the step runs under the `test` job's existing `contents: read` permission. If `codecov_enabled` is set but `test_command` produces no coverage file, the upload fails loudly (`fail_ci_if_error: true`) rather than passing silently.
+
 ## v0.15.1 — 2026-07-26
 
 - README: documented `mcp-registry-publish.yml` — added it to the Contents list and the Workflows table, and gave it its own section with inputs + a usage example. Docs only; the v0.15.0 workflow shipped without the README entry.
