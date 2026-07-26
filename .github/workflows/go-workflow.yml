@@ -49,20 +49,6 @@ on:
         required: false
         default: false
         type: boolean
-      codecov_enabled:
-        description: "Upload the coverage profile left by test_command to Codecov. Requires the codecov_token secret AND a test_command that writes coverage_file (e.g. make test-coverage). Non-blocking: Codecov-side errors are reported as warnings and never fail the job."
-        required: false
-        default: false
-        type: boolean
-      coverage_file:
-        description: "Path to the coverage profile that test_command leaves behind (only used when codecov_enabled)."
-        required: false
-        default: "coverage.txt"
-        type: string
-    secrets:
-      codecov_token:
-        description: "Codecov upload token (used only when codecov_enabled is true)."
-        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -143,18 +129,6 @@ jobs:
         run: |
           echo "Running: ${{ inputs.test_command }}"
           ${{ inputs.test_command }}
-
-      # Uploads the coverage profile that test_command left behind. Non-blocking:
-      # a Codecov-side problem (repo not activated, service outage, missing file)
-      # is reported as a warning and does NOT fail the job -- so it can never block
-      # the release / publish jobs that depend on the test job succeeding.
-      - name: Upload coverage to Codecov
-        if: inputs.codecov_enabled
-        uses: codecov/codecov-action@5975040f7f7d40edaff8d784b576fd65ae95c073 # v5.5.5
-        with:
-          token: ${{ secrets.codecov_token }}
-          files: ${{ inputs.coverage_file }}
-          fail_ci_if_error: false
 
   security-scan:
     name: Security Scan

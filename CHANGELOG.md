@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.16.2 — 2026-07-26
+
+`go-workflow.yml`: removed the Codecov integration.
+
+- **Removed the `codecov_enabled` and `coverage_file` inputs, the `codecov_token` secret, and the Codecov upload step** added in v0.16.0–v0.16.1. `go-workflow.yml` is back to its pre-v0.16.0 shape. Callers that referenced these inputs have had the wiring removed in the same change.
+
 ## v0.16.1 — 2026-07-26
 
 `go-workflow.yml`: Codecov upload is now non-blocking.
