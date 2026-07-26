@@ -19,6 +19,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [go-workflow.yml](#go-workflowyml)
   - [python-package-workflow.yml](#python-package-workflowyml)
   - [clawhub-publish.yml](#clawhub-publishyml)
+  - [mcp-registry-publish.yml](#mcp-registry-publishyml)
 - [License](#license)
 
 ## Shared conventions
@@ -40,6 +41,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
+| [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 
 ## Pinning
 
@@ -440,6 +442,38 @@ jobs:
 ```
 
 With the defaults, that publishes every skill under `.agents/skills/` and every plugin under `.agents/plugins/` on tag pushes — no `with:` block needed. Drop the `if:` line to also validate skills + plugins on every push (publishing still fires only on tags, enforced inside the workflow).
+
+## mcp-registry-publish.yml
+
+Publishes a `server.json` (default: caller repo root) to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag pushes. The registry stores metadata only — it points at the already-published artifact (e.g. a Docker Hub image), it does not host it.
+
+Auth is **secretless**: it uses the GitHub Actions OIDC token to prove ownership of the `io.github.<owner>/*` namespace, so there is no registry token to store. The calling job MUST grant `id-token: write`. Ownership of a referenced Docker image is verified by the registry against an `io.modelcontextprotocol.server.name` LABEL on the image, which must equal `server.json`'s `name`.
+
+On a tag push (`vX.Y.Z`) it stamps `server.json`'s `version` to `X.Y.Z` and rewrites each `oci` package `identifier` tag to the git tag, so the entry points at the exact image the same release built. `mcp-publisher` is exact-pinned (`publisher_version`, default `v1.8.0`) behind an age-gate.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `server_json` | `server.json` | Path to the `server.json` at the caller repo root. |
+| `publisher_version` | `v1.8.0` | Exact `mcp-publisher` release tag to install (no ranges). |
+| `min_release_age_days` | `7` | Refuse an `mcp-publisher` release published more recently than this. |
+| `runs_on` | `ubuntu-latest` | Runner to use. |
+
+### Example
+
+Runs after the image is built + pushed (so the labeled image exists), on tag pushes only:
+
+```yaml
+jobs:
+  publish-to-mcp-registry:
+    needs: [call-docker-image-workflow]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      id-token: write   # secretless OIDC auth to the registry
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/mcp-registry-publish.yml@master
+```
 
 ## License
 
