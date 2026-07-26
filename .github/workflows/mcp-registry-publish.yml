@@ -1,0 +1,136 @@
+name: MCP Registry Publish Workflow
+
+# Publishes a server to the OFFICIAL Model Context Protocol Registry
+# (registry.modelcontextprotocol.io) from a `server.json` at the caller repo's
+# root. The registry stores METADATA ONLY — it points at the already-published
+# artifact (here: the repo's Docker image on Docker Hub), it does not host it.
+#
+# Auth is SECRETLESS: it uses the GitHub Actions OIDC token to prove ownership
+# of the `io.github.<owner>/*` namespace, so there is no registry token to store.
+# The calling job MUST grant `id-token: write` (and `contents: read`).
+#
+# Ownership of the referenced Docker image is verified by the registry via the
+#   LABEL io.modelcontextprotocol.server.name="io.github.<owner>/<name>"
+# annotation on the pushed image, which MUST equal `server.json`'s `name`.
+#
+# Version handling: on a tag push (`vX.Y.Z`) this stamps `server.json`'s
+# `version` to `X.Y.Z` and rewrites each `oci` package `identifier` tag to the
+# git tag (matching how docker-image-workflow tags the pushed image), so the
+# registry entry always points at the exact image built by this same release.
+#
+# Publishing is TAG-GATED. Supply-chain discipline (per this org's rules): the
+# `mcp-publisher` binary version is EXACT-pinned (no `latest`) and an age-gate
+# refuses a release published within the danger window; every Action is pinned
+# by full commit SHA.
+#
+# Example caller (after the image is built+pushed, on tag pushes only):
+#
+#   jobs:
+#     publish-to-mcp-registry:
+#       needs: [call-docker-image-workflow]
+#       if: startsWith(github.ref, 'refs/tags/')
+#       permissions:
+#         id-token: write   # secretless OIDC auth to the registry
+#         contents: read
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/mcp-registry-publish.yml@master
+
+on:
+  workflow_call:
+    inputs:
+      server_json:
+        description: "Path to the server.json at the caller repo root"
+        required: false
+        type: string
+        default: "server.json"
+
+      publisher_version:
+        description: "EXACT mcp-publisher release tag to install (no ranges)"
+        required: false
+        type: string
+        default: "v1.8.0"
+
+      min_release_age_days:
+        description: "Refuse to install an mcp-publisher release published more recently than this many days ago"
+        required: false
+        type: number
+        default: 7
+
+      runs_on:
+        description: "Runner to use (e.g. ubuntu-latest, self-hosted)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+concurrency:
+  group: ${{ github.workflow }}-mcp-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege at the top level; the job opts into exactly what it needs.
+permissions: {}
+
+jobs:
+  publish-mcp:
+    # Metadata only reaches the public registry on a tag; a plain push is a no-op.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      id-token: write # secretless OIDC auth to the MCP registry
+      contents: read
+    steps:
+      - name: Checkout code (read-only)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Age-gate + install mcp-publisher (exact-pinned)
+        env:
+          PUBLISHER_VERSION: ${{ inputs.publisher_version }}
+          MIN_AGE_DAYS: ${{ inputs.min_release_age_days }}
+        run: |
+          set -euo pipefail
+
+          # Age-gate: refuse a release published within the supply-chain danger
+          # window (fresh releases are the primary hijack window).
+          published="$(curl -fsS "https://api.github.com/repos/modelcontextprotocol/registry/releases/tags/${PUBLISHER_VERSION}" \
+            | jq -r '.published_at // empty')"
+          if [ -z "$published" ]; then
+            echo "::error::mcp-publisher ${PUBLISHER_VERSION} not found on GitHub releases"; exit 1
+          fi
+          pub_epoch="$(date -u -d "$published" +%s)"
+          cutoff_epoch="$(date -u -d "$MIN_AGE_DAYS days ago" +%s)"
+          if [ "$pub_epoch" -gt "$cutoff_epoch" ]; then
+            echo "::error::mcp-publisher ${PUBLISHER_VERSION} was published $published — within the ${MIN_AGE_DAYS}-day window; refusing to install"; exit 1
+          fi
+          echo "mcp-publisher ${PUBLISHER_VERSION} published $published — clears the ${MIN_AGE_DAYS}-day age gate"
+
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          url="https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/mcp-publisher_linux_${arch}.tar.gz"
+          curl -fsSL "$url" | tar -xz mcp-publisher
+          test -x ./mcp-publisher || { echo "::error::mcp-publisher not extracted"; exit 1; }
+
+      - name: Stamp version + OCI image tag from git tag
+        env:
+          SERVER_JSON: ${{ inputs.server_json }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$SERVER_JSON" ]; then
+            echo "::error::$SERVER_JSON not found at repo root"; exit 1
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          # Set the server version to the semver, and repoint every OCI package's
+          # image tag at the git tag (docker-image-workflow pushes <repo>:<tag>),
+          # so the registry entry references the exact image this release built.
+          jq --arg v "$VERSION" --arg tag "$TAG" '
+            .version = $v
+            | .packages |= map(
+                if .registryType == "oci"
+                then .identifier = ((.identifier | split(":")[0]) + ":" + $tag)
+                else . end)
+          ' "$SERVER_JSON" > "$SERVER_JSON.tmp" && mv "$SERVER_JSON.tmp" "$SERVER_JSON"
+          echo "── server.json to publish ──"
+          cat "$SERVER_JSON"
+
+      - name: Authenticate to the registry (secretless GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to the MCP Registry
+        run: ./mcp-publisher publish
