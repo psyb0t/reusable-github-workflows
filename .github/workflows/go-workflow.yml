@@ -50,7 +50,7 @@ on:
         default: false
         type: boolean
       codecov_enabled:
-        description: "Upload the coverage profile left by test_command to Codecov. Requires the codecov_token secret AND a test_command that writes coverage_file (e.g. make test-coverage). If enabled with a test_command that produces no coverage file, the upload step fails."
+        description: "Upload the coverage profile left by test_command to Codecov. Requires the codecov_token secret AND a test_command that writes coverage_file (e.g. make test-coverage). Non-blocking: Codecov-side errors are reported as warnings and never fail the job."
         required: false
         default: false
         type: boolean
@@ -144,15 +144,17 @@ jobs:
           echo "Running: ${{ inputs.test_command }}"
           ${{ inputs.test_command }}
 
-      # Uploads the coverage profile that test_command left behind. Fails the job
-      # if codecov_enabled is set but the file is absent (misconfigured test_command).
+      # Uploads the coverage profile that test_command left behind. Non-blocking:
+      # a Codecov-side problem (repo not activated, service outage, missing file)
+      # is reported as a warning and does NOT fail the job -- so it can never block
+      # the release / publish jobs that depend on the test job succeeding.
       - name: Upload coverage to Codecov
         if: inputs.codecov_enabled
         uses: codecov/codecov-action@5975040f7f7d40edaff8d784b576fd65ae95c073 # v5.5.5
         with:
           token: ${{ secrets.codecov_token }}
           files: ${{ inputs.coverage_file }}
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   security-scan:
     name: Security Scan
