@@ -24,6 +24,11 @@ on:
         required: false
         default: true
         type: boolean
+      allow_authors:
+        description: "Comma-separated PR author logins that bypass the collaborator check -- trusted bots whose PRs should stay open to be reviewed and merged (never auto-closed). Defaults to Dependabot."
+        required: false
+        default: "dependabot[bot],dependabot-preview[bot]"
+        type: string
 
 concurrency:
   group: collaborators-only-${{ github.event.pull_request.number || github.run_id }}
@@ -45,8 +50,22 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           CLOSE_MESSAGE: ${{ inputs.close_message }}
           LOCK_PR: ${{ inputs.lock }}
+          ALLOW_AUTHORS: ${{ inputs.allow_authors }}
         run: |
           set -euo pipefail
+
+          # Trusted-author allow-list (e.g. Dependabot): these PRs are meant to
+          # be reviewed and merged, so never auto-close them. Closing them is
+          # also a dead notification path -- a bot-opened, bot-closed PR pings
+          # nobody, so it would silently disappear into the Closed tab.
+          IFS=',' read -ra ALLOWED <<< "${ALLOW_AUTHORS:-}"
+          for a in "${ALLOWED[@]}"; do
+            a="${a//[[:space:]]/}"
+            if [ -n "$a" ] && [ "$AUTHOR" = "$a" ]; then
+              echo "${AUTHOR} is on the allow-list — leaving PR open"
+              exit 0
+            fi
+          done
 
           # 204 = collaborator, 404 = not collaborator, anything else = bail.
           status=$(gh api -i "repos/${REPO}/collaborators/${AUTHOR}" 2>/dev/null \

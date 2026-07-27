@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.16.3 — 2026-07-27
+
+`collaborators-only-workflow.yml`: allow-list trusted bot authors (Dependabot).
+
+- **New `allow_authors` input** (default `dependabot[bot],dependabot-preview[bot]`). A PR whose author login is on this comma-separated list bypasses the collaborator check and is left **open** instead of being closed + locked. Dependabot's version/security-update PRs are meant to be reviewed and merged — and auto-closing them notified nobody anyway (a bot-opened, bot-closed PR generates no notification), so they vanished silently into the Closed tab. Human non-collaborator PRs are still closed as before. Callers that don't set the input get the Dependabot exemption by default.
+
 ## v0.16.2 — 2026-07-26
 
 `go-workflow.yml`: removed the Codecov integration.
