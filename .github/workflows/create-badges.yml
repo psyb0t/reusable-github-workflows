@@ -1,0 +1,183 @@
+name: Create Badges
+
+# Self-rendered SVG badges committed to an orphan `badges` branch. There is NO
+# third-party render service (no shields.io, no img.shields, no codecov) -- the
+# SVGs are generated here and live in the repo, so a badge embedded in a README
+# renders for as long as the repo exists. Add more badge kinds by dropping
+# another block into the "Render badges" step + a mkbadge call.
+#
+# Caller wires it on push to the default branch, e.g.:
+#
+#   jobs:
+#     badges:
+#       if: github.ref_name == github.event.repository.default_branch
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
+#       with:
+#         is_vendored: true
+#
+# README embeds (raw, GitHub-hosted, no external service):
+#   ![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)
+#   ![license](https://raw.githubusercontent.com/<owner>/<repo>/badges/license.svg)
+#   ![version](https://raw.githubusercontent.com/<owner>/<repo>/badges/version.svg)
+
+on:
+  workflow_call:
+    inputs:
+      go_version:
+        description: "Go version (only used for the coverage badge)"
+        required: false
+        default: "1.26"
+        type: string
+      is_vendored:
+        description: "Deps are vendored (skip dep_command for the coverage badge)"
+        required: false
+        default: false
+        type: boolean
+      dep_command:
+        description: "Command run before computing coverage (when not vendored)"
+        required: false
+        default: "make dep"
+        type: string
+      coverage:
+        description: "Generate the coverage badge"
+        required: false
+        default: true
+        type: boolean
+      coverage_packages:
+        description: "Go package pattern measured for the coverage badge"
+        required: false
+        default: "./..."
+        type: string
+      license:
+        description: "Generate the license badge (SPDX id of the repo's detected license)"
+        required: false
+        default: true
+        type: boolean
+      version:
+        description: "Generate the version badge (latest SemVer tag)"
+        required: false
+        default: true
+        type: boolean
+      badges_branch:
+        description: "Branch the generated SVGs are committed to"
+        required: false
+        default: "badges"
+        type: string
+      runs_on:
+        description: "Runner to use"
+        required: false
+        default: "ubuntu-latest"
+        type: string
+
+concurrency:
+  group: create-badges-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  create-badges:
+    name: Create Badges
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        if: inputs.coverage
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: true
+
+      - name: Fetch dependencies
+        if: inputs.coverage && !inputs.is_vendored
+        run: ${{ inputs.dep_command }}
+
+      - name: Render badges
+        env:
+          DO_COVERAGE: ${{ inputs.coverage }}
+          DO_LICENSE: ${{ inputs.license }}
+          DO_VERSION: ${{ inputs.version }}
+          COVERAGE_PKGS: ${{ inputs.coverage_packages }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/badges"
+          mkdir -p "$out"
+
+          xml_escape() {
+            local s="$1"
+            s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"
+            printf '%s' "$s"
+          }
+
+          # mkbadge <label> <message> <color-hex> <outfile> -- flat SVG, ~7px/char
+          # (slight over-estimate so text never overflows) + 10px padding each side.
+          mkbadge() {
+            local label msg color file le me lw mw w lx mx
+            label="$1"; msg="$2"; color="$3"; file="$4"
+            le="$(xml_escape "$label")"; me="$(xml_escape "$msg")"
+            lw=$(( ${#label} * 7 + 10 )); mw=$(( ${#msg} * 7 + 10 )); w=$(( lw + mw ))
+            lx=$(( lw / 2 )); mx=$(( lw + mw / 2 ))
+            printf '<svg xmlns="http://www.w3.org/2000/svg" width="%s" height="20" role="img" aria-label="%s: %s"><title>%s: %s</title><linearGradient id="s" x2="0" y2="100%%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="r"><rect width="%s" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#r)"><rect width="%s" height="20" fill="#555"/><rect x="%s" width="%s" height="20" fill="%s"/><rect width="%s" height="20" fill="url(#s)"/></g><g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11"><text x="%s" y="15" fill="#010101" fill-opacity=".3">%s</text><text x="%s" y="14">%s</text><text x="%s" y="15" fill="#010101" fill-opacity=".3">%s</text><text x="%s" y="14">%s</text></g></svg>\n' \
+              "$w" "$le" "$me" "$le" "$me" "$w" "$lw" "$lw" "$mw" "$color" "$w" "$lx" "$le" "$lx" "$le" "$mx" "$me" "$mx" "$me" > "$file"
+            echo "rendered $file  ($label: $msg)"
+          }
+
+          if [ "$DO_COVERAGE" = "true" ]; then
+            read -ra pkgs <<< "$COVERAGE_PKGS"
+            go test -covermode=atomic -coverprofile=cover.out "${pkgs[@]}"
+            pct="$(go tool cover -func=cover.out | awk '/^total:/{gsub(/%/,"",$3); print $3}')"
+            [ -n "$pct" ] || pct=0
+            int="${pct%.*}"
+            if   [ "$int" -ge 90 ]; then color="#4c1"
+            elif [ "$int" -ge 80 ]; then color="#97ca00"
+            elif [ "$int" -ge 70 ]; then color="#dfb317"
+            elif [ "$int" -ge 50 ]; then color="#fe7d37"
+            else color="#e05d44"; fi
+            mkbadge "coverage" "${pct}%" "$color" "$out/coverage.svg"
+          fi
+
+          if [ "$DO_LICENSE" = "true" ]; then
+            spdx="$(gh api "repos/${REPO}" --jq '.license.spdx_id' 2>/dev/null || echo Unknown)"
+            case "$spdx" in ""|null|NOASSERTION) spdx="Unknown" ;; esac
+            mkbadge "license" "$spdx" "#007ec6" "$out/license.svg"
+          fi
+
+          if [ "$DO_VERSION" = "true" ]; then
+            tag="$(git tag --sort=-v:refname | head -n1)"
+            [ -n "$tag" ] || tag="none"
+            mkbadge "version" "$tag" "#007ec6" "$out/version.svg"
+          fi
+
+      - name: Publish to the badges branch
+        env:
+          BR: ${{ inputs.badges_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "Ciprian Mandache"
+          git config user.email "psyb0t@51k.eu"
+
+          git fetch origin "$BR" 2>/dev/null || true
+          if git rev-parse --verify --quiet "origin/$BR" >/dev/null; then
+            git checkout -B "$BR" "origin/$BR"
+          else
+            git checkout --orphan "$BR"
+          fi
+
+          # The badges branch holds ONLY the generated SVGs.
+          git rm -rf . >/dev/null 2>&1 || true
+          cp "$RUNNER_TEMP/badges/"*.svg .
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "no badge changes -- nothing to publish"
+            exit 0
+          fi
+
+          git commit -m "chore(badges): update [skip ci]"
+          git push origin "HEAD:$BR"

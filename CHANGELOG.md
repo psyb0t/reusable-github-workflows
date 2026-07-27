@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.17.0 — 2026-07-27
+
+New `create-badges.yml`: self-rendered SVG status badges with no third-party render service.
+
+- **New reusable workflow `create-badges.yml`.** Renders coverage / license / version badges as flat SVGs directly in the job (no shields.io, no codecov, nothing external) and commits them to an orphan `badges` branch in the caller repo, so a README badge served from `raw.githubusercontent.com/<owner>/<repo>/badges/<name>.svg` renders for as long as the repo exists. Coverage is computed with `go test` + `go tool cover -func` and colored by threshold; license is the repo's SPDX id from the GitHub API; version is the latest SemVer tag. The publish commit is marked `[skip ci]` so badges never re-trigger a pipeline. Opt-in per badge via the `coverage` / `license` / `version` inputs; wire it on pushes to the default branch. Adding a new badge kind is a block in the workflow's "Render badges" step.
+
 ## v0.16.3 — 2026-07-27
 
 `collaborators-only-workflow.yml`: allow-list trusted bot authors (Dependabot).

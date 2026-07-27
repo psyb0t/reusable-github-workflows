@@ -20,6 +20,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [python-package-workflow.yml](#python-package-workflowyml)
   - [clawhub-publish.yml](#clawhub-publishyml)
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
+  - [create-badges.yml](#create-badgesyml)
 - [License](#license)
 
 ## Shared conventions
@@ -42,6 +43,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
+| [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 
 ## Pinning
 
@@ -473,6 +475,53 @@ jobs:
       id-token: write   # secretless OIDC auth to the registry
       contents: read
     uses: psyb0t/reusable-github-workflows/.github/workflows/mcp-registry-publish.yml@master
+```
+
+## create-badges.yml
+
+Renders status badges as flat SVGs **in the workflow itself** and commits them to an orphan `badges` branch in the caller repo. There is no third-party render service in the path — no shields.io, no codecov — so a badge embedded in a README keeps rendering for as long as the repo exists. The badge files are served straight from GitHub at `https://raw.githubusercontent.com/<owner>/<repo>/badges/<name>.svg`.
+
+Three badge kinds ship today; add more by dropping another block into the workflow's "Render badges" step:
+
+- **coverage** — runs `go test` over `coverage_packages`, reads the `total:` line from `go tool cover -func`, colors by threshold (≥90 green, ≥80 light-green, ≥70 yellow, ≥50 orange, else red).
+- **license** — the repo's detected license SPDX id (from the GitHub API).
+- **version** — the latest SemVer tag (`git tag --sort=-v:refname`).
+
+The job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Wire it on pushes to the default branch (not tags), so the badges track the mainline.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `coverage` | `true` | Generate the coverage badge. |
+| `coverage_packages` | `./...` | Go package pattern measured for coverage. |
+| `license` | `true` | Generate the license badge. |
+| `version` | `true` | Generate the version badge. |
+| `go_version` | `1.26` | Go version (only used for the coverage badge). |
+| `is_vendored` | `false` | Deps are vendored (skip `dep_command` before coverage). |
+| `dep_command` | `make dep` | Command run before computing coverage when not vendored. |
+| `badges_branch` | `badges` | Branch the generated SVGs are committed to. |
+| `runs_on` | `ubuntu-latest` | Runner to use. |
+
+### Example
+
+```yaml
+jobs:
+  badges:
+    if: github.ref_name == github.event.repository.default_branch
+    permissions:
+      contents: write   # commit the SVGs to the badges branch
+    uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
+    with:
+      is_vendored: true
+```
+
+Then embed in the README (raw, GitHub-hosted, no external service):
+
+```markdown
+![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)
+![license](https://raw.githubusercontent.com/<owner>/<repo>/badges/license.svg)
+![version](https://raw.githubusercontent.com/<owner>/<repo>/badges/version.svg)
 ```
 
 ## License
