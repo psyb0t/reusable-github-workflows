@@ -4,6 +4,13 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.18.0 — 2026-07-27
+
+`create-badges.yml` coverage badge is now a dumb value-reader; `go-workflow.yml` can upload the coverage percentage.
+
+- **`create-badges.yml`: the coverage badge no longer computes coverage.** It reads a percentage from a file (default `coverage-percent.txt`, downloaded from the `coverage` artifact) and bakes it into the SVG — no Go setup, no `go test`, no package selection. Producing the number is entirely the caller's pipeline job. If the coverage badge is enabled and the file is missing, the job fails. **Breaking:** the `go_version`, `is_vendored`, `dep_command`, `coverage_packages` inputs are removed; new inputs are `coverage_artifact` (default `coverage`) and `coverage_file` (default `coverage-percent.txt`), and `coverage` now defaults to `false`.
+- **`go-workflow.yml`: new `coverage_file` + `coverage_artifact` inputs.** When `coverage_file` is set, the test job uploads that file (produced by `test_command`) as an artifact so a downstream `create-badges.yml` job can read the percentage. Off by default.
+
 ## v0.17.0 — 2026-07-27
 
 New `create-badges.yml`: self-rendered SVG status badges with no third-party render service.

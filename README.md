@@ -280,6 +280,8 @@ Trigger from `push` so it fires on branch and tag pushes.
 | `lint_command` | string | `"make lint"` | Code-checks command. Set to `""` to skip the lint job. |
 | `test_command` | string | `"make test"` | Test command. Set to `""` to skip the test job. |
 | `is_vendored` | boolean | `false` | Whether dependencies are vendored. Skips `dep_command` when true. |
+| `coverage_file` | string | `""` | If set, upload this file (produced by `test_command`, containing the coverage percentage) as an artifact for a downstream `create-badges.yml` job. |
+| `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. |
 | `scan_enabled` | boolean | `true` | Run `govulncheck` against the module. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
 | `debug` | boolean | `false` | Emit a debug job that prints workflow context + input values. |
@@ -479,41 +481,48 @@ jobs:
 
 ## create-badges.yml
 
-Renders status badges as flat SVGs **in the workflow itself** and commits them to an orphan `badges` branch in the caller repo. There is no third-party render service in the path — no shields.io, no codecov — so a badge embedded in a README keeps rendering for as long as the repo exists. The badge files are served straight from GitHub at `https://raw.githubusercontent.com/<owner>/<repo>/badges/<name>.svg`.
+Renders status badges as flat SVGs and commits them to an orphan `badges` branch in the caller repo. There is no third-party render service in the path — no shields.io, no codecov — so a badge embedded in a README keeps rendering for as long as the repo exists. The value is baked into the committed SVG at creation time; nothing stays live behind it. The badge files are served straight from GitHub at `https://raw.githubusercontent.com/<owner>/<repo>/badges/<name>.svg`.
 
 Three badge kinds ship today; add more by dropping another block into the workflow's "Render badges" step:
 
-- **coverage** — runs `go test` over `coverage_packages`, reads the `total:` line from `go tool cover -func`, colors by threshold (≥90 green, ≥80 light-green, ≥70 yellow, ≥50 orange, else red).
+- **coverage** — a **dumb reader**. It reads a percentage out of a file and renders it. It does NOT run tests, set up Go, or compute anything — producing that number is entirely your pipeline's job. Point it at a file your pipeline produced (default: downloaded from the `coverage` artifact, file `coverage-percent.txt`). If the coverage badge is enabled and the file is missing, the job **fails**. Colored by threshold (≥90 green, ≥80 light-green, ≥70 yellow, ≥50 orange, else red).
 - **license** — the repo's detected license SPDX id (from the GitHub API).
 - **version** — the latest SemVer tag (`git tag --sort=-v:refname`).
 
-The job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Wire it on pushes to the default branch (not tags), so the badges track the mainline.
+The coverage value typically arrives via an artifact an earlier job uploaded — pair this with `go-workflow.yml`'s `coverage_file` input (below), which uploads the percentage file your `test_command` produced. The badges job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Wire it on default-branch pushes (coverage freshness) and tag pushes (so the version badge reflects the just-released tag).
 
 ### Inputs
 
 | Input | Default | Description |
 |---|---|---|
-| `coverage` | `true` | Generate the coverage badge. |
-| `coverage_packages` | `./...` | Go package pattern measured for coverage. |
+| `coverage` | `false` | Generate the coverage badge by reading a percentage from a file. |
+| `coverage_artifact` | `coverage` | Artifact to download the coverage file from (empty = file already in the workspace). |
+| `coverage_file` | `coverage-percent.txt` | Path to the file containing the coverage percentage. |
 | `license` | `true` | Generate the license badge. |
 | `version` | `true` | Generate the version badge. |
-| `go_version` | `1.26` | Go version (only used for the coverage badge). |
-| `is_vendored` | `false` | Deps are vendored (skip `dep_command` before coverage). |
-| `dep_command` | `make dep` | Command run before computing coverage when not vendored. |
 | `badges_branch` | `badges` | Branch the generated SVGs are committed to. |
 | `runs_on` | `ubuntu-latest` | Runner to use. |
 
 ### Example
 
+Wire `go-workflow.yml` to upload the coverage percentage, then read it here:
+
 ```yaml
 jobs:
+  call-go-workflow:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@master
+    with:
+      test_command: "make test-coverage"   # must produce coverage-percent.txt
+      coverage_file: "coverage-percent.txt"
+
   badges:
-    if: github.ref_name == github.event.repository.default_branch
+    needs: [call-go-workflow]
+    if: github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write   # commit the SVGs to the badges branch
     uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
     with:
-      is_vendored: true
+      coverage: true
 ```
 
 Then embed in the README (raw, GitHub-hosted, no external service):

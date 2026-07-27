@@ -1,19 +1,28 @@
 name: Create Badges
 
-# Self-rendered SVG badges committed to an orphan `badges` branch. There is NO
-# third-party render service (no shields.io, no img.shields, no codecov) -- the
-# SVGs are generated here and live in the repo, so a badge embedded in a README
-# renders for as long as the repo exists. Add more badge kinds by dropping
-# another block into the "Render badges" step + a mkbadge call.
+# Self-rendered SVG status badges committed to an orphan `badges` branch. There is
+# NO third-party render service (no shields.io, no codecov). The value is baked
+# into the committed SVG at creation time, so the badge keeps rendering with
+# nothing live behind it.
 #
-# Caller wires it on push to the default branch, e.g.:
+# The coverage badge is a DUMB READER: it reads a percentage out of a file and
+# renders it. It does NOT run tests, set up Go, or compute anything -- producing
+# that number is 100% your pipeline's job. Point it at a file your own pipeline
+# produced (default: downloaded from the `coverage` artifact, file `coverage.txt`,
+# which must contain the percentage). If the coverage badge is enabled and the
+# file is missing, the job FAILS.
+#
+# Caller (coverage value delivered via an artifact an earlier job uploaded):
 #
 #   jobs:
 #     badges:
-#       if: github.ref_name == github.event.repository.default_branch
+#       needs: [call-go-workflow]         # so the coverage artifact exists
+#       if: github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')
+#       permissions:
+#         contents: write
 #       uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
 #       with:
-#         is_vendored: true
+#         coverage: true
 #
 # README embeds (raw, GitHub-hosted, no external service):
 #   ![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)
@@ -23,33 +32,23 @@ name: Create Badges
 on:
   workflow_call:
     inputs:
-      go_version:
-        description: "Go version (only used for the coverage badge)"
-        required: false
-        default: "1.26"
-        type: string
-      is_vendored:
-        description: "Deps are vendored (skip dep_command for the coverage badge)"
+      coverage:
+        description: "Generate the coverage badge by reading a percentage from a file"
         required: false
         default: false
         type: boolean
-      dep_command:
-        description: "Command run before computing coverage (when not vendored)"
+      coverage_artifact:
+        description: "Artifact to download the coverage file from (empty = file is already in the checkout/workspace)"
         required: false
-        default: "make dep"
+        default: "coverage"
         type: string
-      coverage:
-        description: "Generate the coverage badge"
+      coverage_file:
+        description: "Path to the file containing the coverage percentage"
         required: false
-        default: true
-        type: boolean
-      coverage_packages:
-        description: "Go package pattern measured for the coverage badge"
-        required: false
-        default: "./..."
+        default: "coverage-percent.txt"
         type: string
       license:
-        description: "Generate the license badge (SPDX id of the repo's detected license)"
+        description: "Generate the license badge (repo's SPDX id from the GitHub API)"
         required: false
         default: true
         type: boolean
@@ -85,23 +84,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        if: inputs.coverage
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - name: Download coverage artifact
+        if: inputs.coverage && inputs.coverage_artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          go-version: ${{ inputs.go_version }}
-          cache: true
-
-      - name: Fetch dependencies
-        if: inputs.coverage && !inputs.is_vendored
-        run: ${{ inputs.dep_command }}
+          name: ${{ inputs.coverage_artifact }}
 
       - name: Render badges
         env:
           DO_COVERAGE: ${{ inputs.coverage }}
           DO_LICENSE: ${{ inputs.license }}
           DO_VERSION: ${{ inputs.version }}
-          COVERAGE_PKGS: ${{ inputs.coverage_packages }}
+          COVERAGE_FILE: ${{ inputs.coverage_file }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -129,10 +123,15 @@ jobs:
           }
 
           if [ "$DO_COVERAGE" = "true" ]; then
-            read -ra pkgs <<< "$COVERAGE_PKGS"
-            go test -covermode=atomic -coverprofile=cover.out "${pkgs[@]}"
-            pct="$(go tool cover -func=cover.out | awk '/^total:/{gsub(/%/,"",$3); print $3}')"
-            [ -n "$pct" ] || pct=0
+            if [ ! -f "$COVERAGE_FILE" ]; then
+              echo "::error::coverage badge enabled but '$COVERAGE_FILE' not found -- your pipeline must produce it (and upload it as the coverage artifact)" >&2
+              exit 1
+            fi
+            pct="$(grep -oE '[0-9]+(\.[0-9]+)?' "$COVERAGE_FILE" | head -n1 || true)"
+            if [ -z "$pct" ]; then
+              echo "::error::no numeric coverage value found in '$COVERAGE_FILE'" >&2
+              exit 1
+            fi
             int="${pct%.*}"
             if   [ "$int" -ge 90 ]; then color="#4c1"
             elif [ "$int" -ge 80 ]; then color="#97ca00"

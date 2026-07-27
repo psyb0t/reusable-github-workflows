@@ -34,6 +34,16 @@ on:
         required: false
         default: false
         type: boolean
+      coverage_file:
+        description: "If set, upload this file (produced by test_command, containing the coverage percentage) as an artifact so a downstream badge job can read it"
+        required: false
+        default: ""
+        type: string
+      coverage_artifact:
+        description: "Name of the uploaded coverage artifact"
+        required: false
+        default: "coverage"
+        type: string
       scan_enabled:
         description: "Enable govulncheck dependency vulnerability scan"
         required: false
@@ -129,6 +139,15 @@ jobs:
         run: |
           echo "Running: ${{ inputs.test_command }}"
           ${{ inputs.test_command }}
+
+      - name: Upload coverage artifact
+        if: inputs.coverage_file != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.coverage_artifact }}
+          path: ${{ inputs.coverage_file }}
+          if-no-files-found: error
+          retention-days: 1
 
   security-scan:
     name: Security Scan
