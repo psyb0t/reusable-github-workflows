@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.19.0 — 2026-07-28
+
+`go-workflow.yml` gains a codegen-drift gate, and every `*_command` input can be switched off with `-`.
+
+- **`go-workflow.yml`: new `generate-check` job.** Runs `generate_command` (default `make generate`), then fails if the working tree moved. This catches the two silent forms of codegen drift: a source change whose generator was never re-run, so stale generated output ships; and a hand-edit to a generated file, which the next regeneration wipes. Neither breaks the build, so only a diff finds them. The check uses `git status --porcelain` rather than `git diff --exit-code`, so a generator emitting a brand-new uncommitted file is caught too — `git diff` only sees tracked files. `.gitignore` is still respected. The job also gates the release job, so a drifted tree cannot cut a tag.
+  - The gate assumes the generator is idempotent. One that stamps a timestamp or hostname, or iterates a map in random order, fails on every run — pin the generator version (for Go, the `go.mod` `tool` block) instead of disabling the job.
+  - **Behavior change for existing callers:** because `generate_command` defaults to `make generate`, a caller that re-pins to this version and has no such target will see the new job fail. Set `generate_command: "-"` in repos that generate nothing.
+- **`go-workflow.yml`: `-` disables any `*_command` input.** `dep_command`, `generate_command`, `lint_command` and `test_command` all treat `-` as "skip this step entirely". `""` keeps working for backwards compatibility, but `-` is the documented form — an empty string in a caller's YAML is indistinguishable from a templating accident, while `-` reads as a deliberate opt-out. `dep_command: "-"` skips dependency setup in every job, alongside the existing `is_vendored: true`.
+
 ## v0.18.0 — 2026-07-27
 
 `create-badges.yml` coverage badge is now a dumb value-reader; `go-workflow.yml` can upload the coverage percentage.

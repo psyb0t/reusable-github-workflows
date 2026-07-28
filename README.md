@@ -264,8 +264,11 @@ Tool cache (`/opt/hostedtoolcache`) and swap are **not** touched (the tool cache
 
 Lints + tests + scans + (on tag) cuts a GitHub Release.
 
-- Lint job runs unless `lint_command: ""`. Test job runs unless `test_command: ""`. Vulnerability scan (`govulncheck@v1.3.0`) runs unless `scan_enabled: false`.
-- Release job runs only on `refs/tags/*`, gated on: `code-checks` succeeded or was skipped, `test` succeeded or was skipped, and (when `scan_enabled: true`) `security-scan` succeeded.
+- Every `*_command` input accepts `-` (preferred) or `""` to skip that step entirely. `-` is preferred because an empty string in a caller's YAML is indistinguishable from a templating accident, while `-` reads as a deliberate opt-out.
+- Lint job runs unless `lint_command` is disabled. Test job runs unless `test_command` is disabled. Vulnerability scan (`govulncheck@v1.3.0`) runs unless `scan_enabled: false`.
+- Codegen drift (`generate-check` job) runs `generate_command`, then fails if the working tree moved. It catches a source change whose generator was never re-run, and a hand-edit to a generated file that the next regeneration would silently wipe — neither breaks the build, so only a diff finds them. The check is `git status --porcelain`, not `git diff`, so a generator emitting a brand-new uncommitted file is caught too (`.gitignore` is still respected). On by default; set `generate_command: "-"` in repos that generate nothing.
+  - The generator must be idempotent. One that stamps a timestamp or hostname, or iterates a map in random order, will fail on every run — pin the generator version (for Go, the `go.mod` `tool` block) rather than disabling the job.
+- Release job runs only on `refs/tags/*`, gated on: `code-checks` succeeded or was skipped, `test` succeeded or was skipped, `generate-check` succeeded or was skipped, and (when `scan_enabled: true`) `security-scan` succeeded.
 - Release notes: the workflow writes a `CHANGELOG.md` in the CI working tree from `git log <prev_tag>..HEAD --pretty='* %s (%h)'` and uses it as the release body. **If your repo already has a hand-written `CHANGELOG.md`, it is overwritten only in the CI workspace** — your committed file is unaffected, but the release body on GitHub will be the auto-generated commit list, not your file. To use a hand-written changelog as the release body, do the release yourself instead of via this workflow.
 - Pre-release classification: any tag containing `alpha`, `beta`, or `rc` (case-insensitive) is marked as a pre-release on GitHub and is NOT marked as the latest release.
 
@@ -276,9 +279,10 @@ Trigger from `push` so it fires on branch and tag pushes.
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `go_version` | string | `"1.26"` | Go toolchain version passed to `actions/setup-go`. |
-| `dep_command` | string | `"make dep"` | Command to install dependencies. Skipped when `is_vendored: true`. |
-| `lint_command` | string | `"make lint"` | Code-checks command. Set to `""` to skip the lint job. |
-| `test_command` | string | `"make test"` | Test command. Set to `""` to skip the test job. |
+| `dep_command` | string | `"make dep"` | Command to install dependencies. Set to `-` to skip it in every job. Also skipped when `is_vendored: true`. |
+| `generate_command` | string | `"make generate"` | Regenerates committed generated files; the job fails if the tree changed afterwards. Set to `-` to skip the codegen-drift job. |
+| `lint_command` | string | `"make lint"` | Code-checks command. Set to `-` to skip the lint job. |
+| `test_command` | string | `"make test"` | Test command. Set to `-` to skip the test job. |
 | `is_vendored` | boolean | `false` | Whether dependencies are vendored. Skips `dep_command` when true. |
 | `coverage_file` | string | `""` | If set, upload this file (produced by `test_command`, containing the coverage percentage) as an artifact for a downstream `create-badges.yml` job. |
 | `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. |
@@ -288,7 +292,7 @@ Trigger from `push` so it fires on branch and tag pushes.
 
 ### Security note
 
-`test_command`, `lint_command`, and `dep_command` are interpolated into shell scripts. Callers control these strings, which is equivalent to arbitrary code execution on the runner with whatever secrets/permissions the caller workflow exposes. Only call this workflow from trusted repos with branch protection on the workflow files.
+`test_command`, `lint_command`, `dep_command`, and `generate_command` are interpolated into shell scripts. Callers control these strings, which is equivalent to arbitrary code execution on the runner with whatever secrets/permissions the caller workflow exposes. Only call this workflow from trusted repos with branch protection on the workflow files.
 
 ### Example
 
