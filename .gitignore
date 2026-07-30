@@ -1,4 +1,37 @@
 .research_files
+# Codex / agent scratch — never commit
+AGENTS.md
+CODEX.local.md
+.agent_notes/
+.agent_knowledge/
+PLAN.md
+implplan.md
+NOTES.md
+TODO.md
+WIP.md
+
+# Secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# Test / profile artifacts
+coverage.txt
+coverage.out
+profile.out
+.cover/
+htmlcov/
+
+# Editor / IDE
+.vscode/
+.idea/
+.editorconfig
+.envrc
+.tool-versions
+.python-version
+.nvmrc
+pyrightconfig.json
 CLAUDE.md
 git-update.sh
 ANUSTIMES.md

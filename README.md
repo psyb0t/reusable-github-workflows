@@ -29,7 +29,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 
 - **Third-party actions pinned by full commit SHA** — never a floating tag, so a re-pointed or compromised upstream tag can't silently change what runs.
 - **Least-privilege permissions** — the top level is `permissions: {}`; each job opts in to only the scopes its steps need (`contents: read`, `security-events: write`, …).
-- **Concurrency groups cancel superseded runs** — a newer push on the same ref supersedes an in-flight run, except tag pushes, which always run to completion.
+- **Concurrency matches the resource** — a newer push on the same ref supersedes ordinary in-flight work (tag pushes always complete); badge publishing serializes writers for each caller repository and output branch.
 - **Triggered from `push`** — you wire `on: [push]`; the workflow itself decides what to act on (branch vs. tag) and no-ops on refs it doesn't handle.
 - **Supply-chain discipline on any tooling install** — exact version pins, an age-gate that refuses freshly-published releases, and `npm install --ignore-scripts`.
 
@@ -493,7 +493,7 @@ Three badge kinds ship today; add more by dropping another block into the workfl
 - **license** — the repo's detected license SPDX id (from the GitHub API).
 - **version** — the latest SemVer tag (`git tag --sort=-v:refname`).
 
-The coverage value typically arrives via an artifact an earlier job uploaded — pair this with `go-workflow.yml`'s `coverage_file` input (below), which uploads the percentage file your `test_command` produced. The badges job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Wire it on default-branch pushes (coverage freshness) and tag pushes (so the version badge reflects the just-released tag).
+The coverage value typically arrives via an artifact an earlier job uploaded — pair this with `go-workflow.yml`'s `coverage_file` input (below), which uploads the percentage file your `test_command` produced. The badges job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Invocations targeting the same caller repository and `badges_branch` are serialized, so default-branch pushes (coverage freshness) and tag pushes (the released version) can safely update the same branch.
 
 ### Inputs
 

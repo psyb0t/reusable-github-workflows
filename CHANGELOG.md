@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.19.1 — 2026-07-29
+
+`create-badges.yml` now serializes updates to each caller's generated badge branch.
+
+- **Fix — shared badge-branch writer lock.** Default-branch and tag invocations now use the same concurrency group for a caller repository and its selected `badges_branch`, with cancellation disabled. Concurrent invocations wait rather than racing a stale push to the mutable badge branch.
+
 ## v0.19.0 — 2026-07-28
 
 `go-workflow.yml` gains a codegen-drift gate, and every `*_command` input can be switched off with `-`.

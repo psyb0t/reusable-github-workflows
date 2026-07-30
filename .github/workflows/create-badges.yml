@@ -69,8 +69,10 @@ on:
         type: string
 
 concurrency:
-  group: create-badges-${{ github.ref }}
-  cancel-in-progress: true
+  # Branch and tag callers both write this mutable output branch. Serialize
+  # them by caller repository and output branch rather than triggering ref.
+  group: create-badges-${{ github.repository }}-${{ inputs.badges_branch }}
+  cancel-in-progress: false
 
 jobs:
   create-badges:
