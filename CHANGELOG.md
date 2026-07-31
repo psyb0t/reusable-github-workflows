@@ -4,6 +4,17 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.27.1 — 2026-07-31
+
+This repo now mirrors itself, which it never did.
+
+- **Added `.github/workflows/mirror.yml`.** It could not be called
+  `git-mirror.yml` — that name belongs to the reusable definition this repo
+  publishes — and the collision is exactly why the gap survived: anything
+  checking "does this repo have a `git-mirror.yml`" found one and moved on. What
+  it found was a `workflow_call` definition, which never fires on a push, so
+  nothing was ever mirrored and GitLab returned 404 for the project.
+
 ## v0.27.0 — 2026-07-31
 
 `git-mirror.yml`: the project URL survives to GitLab, and a refused topic only
