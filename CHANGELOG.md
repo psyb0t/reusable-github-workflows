@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.21.0 — 2026-07-31
+
+- **`fail_on_upstream_error` now defaults to `true`.** v0.20.0 shipped it `false`,
+  so a ClawHub outage produced a green run that had not published anything. That
+  is the wrong trade: green reads as "shipped", and the silence is exactly how a
+  package drifts versions behind the repo that owns it — `@psyb0t/mt5-httpapi`
+  sat at `4.11.0` while the repo tagged `4.11.3`, and nothing said so. The
+  retries still happen first (`publish_attempts`, default 4, quadratic backoff);
+  what changed is that giving up is now loud. Set `fail_on_upstream_error: false`
+  per caller to get the previous warning-and-defer behaviour back.
+- A rejection of your own content is unaffected — it has always failed on the
+  first attempt with no retries, whatever this input is set to.
+
 ## v0.20.0 — 2026-07-31
 
 Two release-blocking bugs: Docker repos silently stopped cutting GitHub

@@ -141,10 +141,10 @@ on:
         default: 4
 
       fail_on_upstream_error:
-        description: "Fail the job when ClawHub's own service is broken (sandbox/ENOENT/5xx/network) after every attempt. Default false: a release does not go red for an outage you cannot fix. Rejections of your own content ALWAYS fail regardless."
+        description: "Fail the job when ClawHub's own service is still broken after every attempt. Default true: a green run that did not publish is a lie, and that silence is how a package drifts versions behind without anyone noticing. Set false to downgrade it to a warning + deferred summary instead."
         required: false
         type: boolean
-        default: false
+        default: true
 
     secrets:
       clawhub_token:
