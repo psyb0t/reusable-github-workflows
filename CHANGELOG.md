@@ -4,6 +4,21 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.31.0 — 2026-07-31
+
+- **`docker-image-workflow.yml`: `scan_fail_build` now defaults to `false`.** An
+  image built on any real base accumulates upstream CVEs continuously, most with
+  no fix available, so failing the build on them turns the pipeline permanently
+  red and the signal stops meaning anything — six repos here were red for exactly
+  this. Findings are still uploaded to the Security tab, which is where they are
+  meant to be read: the SARIF upload runs `if: always()` and never depended on
+  the scan step passing. Set `scan_fail_build: true` on an image where a
+  vulnerability genuinely must block the release.
+
+  Every caller in this org that had an opinion already passed `false`
+  explicitly; this makes the default match the practice instead of contradicting
+  it.
+
 ## v0.30.1 — 2026-07-31
 
 **Fixes every single-target caller of `docker-image-workflow.yml` failing.**

@@ -99,7 +99,7 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 - Updates the Docker Hub repository description (the **Overview** tab) from the repo's `README.md` after every successful push via `peter-evans/dockerhub-description`. The Docker Hub token must have permission to edit the repository.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
 - On tag pushes, creates a GitHub Release once the build succeeds.
-- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push, and uploads the findings as SARIF to the repo's **Security → Code scanning** tab. **Scan runs after the artifact is already published, so it never blocks the push or the GitHub Release.** By default a finding at/above `scan_severity` still fails the workflow (red run); set `scan_fail_build: false` to keep scanning + reporting to the Security tab WITHOUT failing the run — the right posture for images with known-unfixable upstream vulns, and required if you want a downstream job (e.g. another reusable workflow) to `needs:` this one. The SARIF upload needs `permissions: security-events: write` on the caller's job (see below); without it, scanning still runs but the Security tab isn't populated.
+- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push, and uploads the findings as SARIF to the repo's **Security → Code scanning** tab. **Scan runs after the artifact is already published, so it never blocks the push or the GitHub Release.** **A finding does not fail the run by default** (`scan_fail_build: false`). Any image on a real base accumulates upstream CVEs continuously, most with no fix available, so failing on them just turns the pipeline permanently red and the signal stops meaning anything — the Security tab is where findings are meant to be read, and they land there regardless. Set `scan_fail_build: true` for an image where a vulnerability genuinely must block the release. Leaving it false is also what lets a downstream job (e.g. another reusable workflow) `needs:` this one. The SARIF upload needs `permissions: security-events: write` on the caller's job (see below); without it, scanning still runs but the Security tab isn't populated.
 
 Trigger from `push` so it fires on branch and tag pushes. The workflow itself only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*` — pushes to other branches do nothing.
 
@@ -112,7 +112,7 @@ Trigger from `push` so it fires on branch and tag pushes. The workflow itself on
 | `build_targets` | string (JSON) | `""` | Multi-target build matrix (see below). Empty = single-image build. |
 | `scan_enabled` | boolean | `true` | Run Grype scan against the pushed image + upload SARIF to the Security tab. |
 | `scan_severity` | string | `"medium"` | Grype severity threshold to fail on: `negligible`, `low`, `medium`, `high`, `critical`. |
-| `scan_fail_build` | boolean | `true` | Fail the run on a finding at/above `scan_severity`. Set `false` to keep scanning + Security-tab reporting without failing the run (known-unfixable upstream vulns; also lets a downstream job `needs:` this workflow). Populating the Security tab needs `permissions: security-events: write` on the caller job. |
+| `scan_fail_build` | boolean | `false` | Fail the run on a finding at/above `scan_severity`. Off by default — upstream CVEs are continuous and mostly unfixable, so failing on them makes the pipeline permanently red for no signal; findings still reach the Security tab. Set `true` where a vuln must block the release. Populating the Security tab needs `permissions: security-events: write` on the caller job. |
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `free_disk_space` | boolean | `true` | Free ~25-30 GB before build (Android SDK, .NET, Haskell, large apt packages, preloaded docker images). **Disable for self-hosted runners** — wipes shared host directories. |
@@ -144,7 +144,7 @@ jobs:
 
 ### Non-blocking scan + a downstream job that depends on the build
 
-When Grype always finds known-unfixable upstream vulns, set `scan_fail_build: false` so the run goes green (findings still land in the Security tab), and grant `security-events: write` so the SARIF actually uploads. A green run is also what lets another job `needs:` this one:
+This is the default posture, so `scan_fail_build: false` below is only shown for clarity — findings land in the Security tab and the run stays green. Grant `security-events: write` so the SARIF actually uploads. A green run is also what lets another job `needs:` this one:
 
 ```yaml
 jobs:
