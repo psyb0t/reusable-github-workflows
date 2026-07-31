@@ -4,6 +4,34 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.27.0 — 2026-07-31
+
+`git-mirror.yml`: the project URL survives to GitLab, and a refused topic only
+costs you that topic.
+
+- **New `readme_url_header` input (default `true`).** GitLab is the only target
+  with no writable project-URL field, and its README is the project landing
+  page — so when the GitHub repo has a homepage set, it is now prepended as a
+  markdown link at the top of the README on the mirror's default branch. Without
+  this the URL simply had nowhere to go and was silently dropped.
+
+  This is the one place a GitLab mirror deliberately differs from its source:
+  that branch carries one extra commit. Every other branch, every tag and every
+  other file stay byte-identical. The commit is authored by
+  `git-mirror <git-mirror@noreply.invalid>` and **dated from the source tip
+  rather than "now"**, which makes its hash stable — an unchanged source
+  re-mirrors to the identical SHA, so the force-push is a no-op instead of
+  rewriting the branch on every run and forcing everyone tracking the mirror to
+  re-pull. A repo with no homepage, or no README, is untouched. Set
+  `readme_url_header: false` to keep the mirror an exact copy.
+- **Topics are now added incrementally when the bulk update is refused.**
+  `v0.26.1` reacted to GitLab's all-or-nothing `422` by dropping the topics
+  entirely; it now sets the description on its own and then grows the topic list
+  one entry at a time, keeping everything accepted and skipping only what is
+  actually refused. On the repo that surfaced this, 10 of 11 topics now land
+  where previously all 11 were lost. The offenders are named in a warning. The
+  bulk call is still attempted first, so the normal case is a single request.
+
 ## v0.26.1 — 2026-07-31
 
 `git-mirror.yml`: a topic the target refuses no longer fails the whole mirror.

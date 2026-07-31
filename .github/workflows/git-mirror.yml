@@ -108,6 +108,12 @@ on:
         type: boolean
         default: true
 
+      readme_url_header:
+        description: "On targets with no project-URL field (GitLab only), prepend this repo's homepage as a link at the top of the README on the mirror's default branch. Costs the mirror one extra commit on that branch; every other branch, tag and file stays byte-identical. No effect when the repo has no homepage set or no README."
+        required: false
+        type: boolean
+        default: true
+
       codeberg_url:
         description: "Base URL of the Codeberg/Gitea instance"
         required: false
@@ -298,6 +304,7 @@ jobs:
           PREFIX: ${{ inputs.description_prefix }}
           MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
+          README_URL_HEADER: ${{ inputs.readme_url_header }}
         run: |
           set -euo pipefail
 
@@ -344,6 +351,10 @@ jobs:
             exit 1
           fi
 
+          # Read outside the sync_metadata guard: the README injection below
+          # needs the homepage even when project-metadata syncing is off.
+          homepage=$(gh api "repos/${SOURCE}" --jq '.homepage // ""')
+
           if [ "${SYNC_METADATA}" = "true" ]; then
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
 
@@ -354,18 +365,19 @@ jobs:
               | if length > $max then .[0:($max - 3)] + "..." else . end
             ')
 
-            # Topics are sent with the description, then retried without them.
-            # GitLab validates the array as a unit and rejects the whole PUT
-            # with an opaque 422 if any single topic is unacceptable to it --
-            # a GitHub topic that is perfectly legal there can be refused here.
-            # Metadata is a nicety; the refs are the point. Losing the topics
-            # must not fail a mirror that otherwise works.
+            # The happy path is one call with everything. GitLab validates the
+            # topic array as a unit and rejects the whole PUT with an opaque 422
+            # if it dislikes any single entry -- and a topic that is perfectly
+            # legal on GitHub can be refused here, with nothing in the response
+            # saying which one.
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(printf '%s' "${meta}" | jq -c --arg d "${description}" '{description: $d, topics: .topics}')" \
               "https://gitlab.com/api/v4/projects/${encoded}" 2>&1); then
-              echo "::warning::GitLab rejected the metadata with topics (${out}); retrying with the description alone" >&2
+              echo "::warning::GitLab refused the metadata as a whole (${out}); syncing the description, then adding topics one at a time" >&2
 
+              # The bulk call is atomic, so its failure means the description
+              # did not land either. Set it on its own first.
               if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
                 -H "Content-Type: application/json" \
                 -d "$(jq -nc --arg d "${description}" '{description: $d}')" \
@@ -374,13 +386,95 @@ jobs:
                 exit 1
               fi
 
-              echo "description synced; topics skipped -- GitLab refused at least one of them"
+              # Then grow the list one topic at a time, keeping whatever is
+              # accepted and dropping only what is actually refused. Each PUT
+              # replaces the whole array, so the candidate is always the set
+              # accepted so far plus the one being tried.
+              accepted='[]'
+              rejected=()
+
+              while IFS= read -r topic; do
+                [ -n "${topic}" ] || continue
+                candidate=$(jq -nc --argjson a "${accepted}" --arg t "${topic}" '$a + [$t]')
+
+                if curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+                  -H "Content-Type: application/json" \
+                  -d "$(jq -nc --argjson t "${candidate}" '{topics: $t}')" \
+                  "https://gitlab.com/api/v4/projects/${encoded}" >/dev/null 2>&1; then
+                  accepted="${candidate}"
+                else
+                  rejected+=("${topic}")
+                fi
+              done < <(printf '%s' "${meta}" | jq -r '.topics[]')
+
+              kept=$(printf '%s' "${accepted}" | jq 'length')
+              echo "description synced; ${kept} topic(s) kept"
+
+              if ((${#rejected[@]})); then
+                echo "::warning::GitLab refused these topics, they were skipped: ${rejected[*]}" >&2
+              fi
             fi
           fi
 
           git clone --bare --quiet \
             "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
           cd src.git
+
+          # GitLab is the only target with no project-URL field, so a repo's
+          # homepage has nowhere to live here. Put it at the top of the README
+          # on the default branch instead -- that page IS the project landing
+          # page on GitLab, so it is the one place a visitor will see it.
+          #
+          # This is the one way a GitLab mirror deliberately differs from its
+          # source: the default branch carries one extra commit. Every other
+          # branch, every tag, and every other file are byte-identical.
+          if [ "${README_URL_HEADER}" = "true" ] && [ -n "${homepage}" ]; then
+            branch=$(gh api "repos/${SOURCE}" --jq '.default_branch')
+
+            readme=$(git ls-tree --name-only "${branch}" \
+              | grep -iE '^readme(\.md|\.markdown|\.rst|\.txt)?$' | head -1 || true)
+
+            if [ -z "${readme}" ]; then
+              echo "::warning::no README on ${branch}; project URL not injected"
+            else
+              mode=$(git ls-tree "${branch}" -- "${readme}" | awk '{print $1}')
+
+              git cat-file -p "${branch}:${readme}" >/tmp/readme.orig
+              {
+                printf '[%s](%s)\n\n' "${homepage}" "${homepage}"
+                cat /tmp/readme.orig
+              } >/tmp/readme.new
+
+              blob=$(git hash-object -w /tmp/readme.new)
+
+              GIT_INDEX_FILE=/tmp/mirror.index
+              export GIT_INDEX_FILE
+              git read-tree "${branch}"
+              git update-index --add --cacheinfo "${mode},${blob},${readme}"
+              tree=$(git write-tree)
+              unset GIT_INDEX_FILE
+              rm -f /tmp/mirror.index
+
+              # Dated from the source tip rather than "now", so the injected
+              # commit hashes the same on every run for an unchanged source.
+              # Otherwise each mirror run would rewrite the branch with a new
+              # SHA and every clone of the mirror would need a force pull.
+              tip_date=$(git show -s --format=%cI "${branch}")
+
+              commit=$(GIT_AUTHOR_NAME="git-mirror" \
+                GIT_AUTHOR_EMAIL="git-mirror@noreply.invalid" \
+                GIT_AUTHOR_DATE="${tip_date}" \
+                GIT_COMMITTER_NAME="git-mirror" \
+                GIT_COMMITTER_EMAIL="git-mirror@noreply.invalid" \
+                GIT_COMMITTER_DATE="${tip_date}" \
+                git commit-tree "${tree}" -p "$(git rev-parse "${branch}")" \
+                  -m "docs: link the project page at the top of the README" \
+                  -m "GitLab has no project-URL field, so the homepage set on the GitHub original has nowhere else to appear on this mirror. Added by the mirror job; it is not present upstream.")
+
+              git update-ref "refs/heads/${branch}" "${commit}"
+              echo "injected project URL into ${readme} on ${branch}"
+            fi
+          fi
 
           prune_flag=()
           if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi

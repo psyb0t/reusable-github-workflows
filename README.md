@@ -568,9 +568,15 @@ Platform differences that aren't obvious:
 
 | Platform | Description | Topics | Project URL | Notes |
 |---|---|---|---|---|
-| Codeberg (Gitea) | yes | yes | yes (`website`) | Gitea rejects the whole topics array if one entry is invalid, so topics are lowercased, stripped to `[a-z0-9-]`, de-duped and capped at 25. |
-| GitLab | yes | yes | **no** | Project creation needs a token with `api` scope, not just `write_repository`. Its project object exposes only derived URLs (`web_url`, `readme_url`, …), none writable, so the homepage has nowhere to go. |
+| Codeberg (Gitea) | yes | yes | yes (`website`) | Gitea rejects the whole topics array if one entry is invalid, so topics are lowercased, stripped to `[a-z0-9-]`, de-duped and capped at 25. A rejection the normalizer doesn't model is a warning, not a failed mirror. |
+| GitLab | yes | yes | **no** → README | Project creation needs a token with `api` scope, not just `write_repository`. Its project object exposes only derived URLs (`web_url`, `readme_url`, …), none writable, so the homepage goes at the top of the README instead — see below. |
 | Gitee | yes | **no** | yes (`homepage`) | `name` is **required** on the repo-edit call — a body without it is rejected — so it's sent unchanged. See the visibility note below. |
+
+**GitLab has nowhere to put a project URL, so it goes in the README.** GitLab is the only target with no writable homepage field, and its README *is* the project landing page. When the GitHub repo has a homepage set, `readme_url_header` (default `true`) prepends it as a markdown link at the top of the README on the mirror's default branch.
+
+This is the one place a GitLab mirror deliberately differs from its source: that branch carries one extra commit. Every other branch, every tag and every other file stay byte-identical. The commit is authored by `git-mirror <git-mirror@noreply.invalid>` and dated from the source tip rather than "now", which makes its hash stable — an unchanged source re-mirrors to the identical SHA, so the force-push is a no-op instead of rewriting the branch on every run. A repo with no homepage, or no README, is left alone. Set `readme_url_header: false` to keep the mirror an exact copy.
+
+**A topic the target refuses doesn't cost you the rest.** GitLab validates the topic array as a unit and rejects the whole request with an opaque `422 Project could not be updated!` over a single entry — and a topic that's perfectly legal on GitHub can be refused there, with nothing saying which one (observed: `fileupload` refused while `fileuploader` on the same repo was fine). The bulk call is still tried first, so the normal case is one request; only on rejection does it fall back to setting the description alone and then growing the topic list one entry at a time, keeping everything accepted and skipping just the offenders, which are named in a warning.
 
 **Gitee visibility.** Gitee requires a mobile number bound to the account before any repository can be public. Rather than refusing a `private: false` create, it accepts the call and creates a **private** repo — so the mirror runs green while the result is invisible to everyone else. The Gitee job re-reads visibility after creating and warns when this happens. Flipping such a repo afterwards returns `422` with `仓库转公开需绑定手机号码` ("making a repository public requires binding a phone number"); that's an account setting, not something the workflow can fix.
 
@@ -586,6 +592,7 @@ Platform differences that aren't obvious:
 | `description_prefix` | `[mirror] ` | Prepended to the synced description so a visitor can tell a copy from the original. Empty string disables it. |
 | `description_max_length` | `2000` | Cap on the synced description, in **characters**. Over it, the text is cut and ends in `...`. |
 | `prune` | `true` | Delete refs on the target that no longer exist here. |
+| `readme_url_header` | `true` | On targets with no project-URL field (GitLab only), prepend this repo's homepage as a link at the top of the README on the mirror's default branch. Costs one extra commit on that branch. No effect without a homepage or a README. |
 | `codeberg_url` | `https://codeberg.org` | Base URL of the Codeberg/Gitea instance. |
 | `target_owner` | `""` | Owner/namespace on Codeberg, GitLab and Gitee (empty = this repo's owner). |
 | `runs_on` | `ubuntu-latest` | Runner to use. |
