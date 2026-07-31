@@ -4,6 +4,27 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.30.1 — 2026-07-31
+
+**Fixes every single-target caller of `docker-image-workflow.yml` failing.**
+Anyone who calls it *without* `build_targets` should take this.
+
+- `build-multi-wave1` gated on `needs.plan-multi.outputs.wave1 != '[]'` but not
+  on `needs.plan-multi.result`. When a caller sets no `build_targets`,
+  `plan-multi` is **skipped**, and every output of a skipped job is the **empty
+  string** — so `'' != '[]'` evaluates TRUE, the job gets scheduled, and its
+  matrix then tries `fromJson('')`, which is not valid JSON and cannot produce a
+  matrix.
+- The result is a run that **fails with no failed job, no step logs, and no
+  retry offered** — every job reads `success` or `skipped` while the run
+  conclusion is `failure`. Diagnosing it from the UI is close to impossible;
+  the tell is that `build-multi-wave1` is *absent* from the job list rather than
+  skipped, because it never instantiated.
+- `build-multi` already gated on `plan-multi.result == 'success'` for exactly
+  this reason. `build-multi-wave1` now does too. Multi-target callers were
+  unaffected throughout, which is why the split was cleanly one path green and
+  the other red.
+
 ## v0.30.0 — 2026-07-31
 
 **Fixes mirrors silently freezing after their first run.** Anyone using

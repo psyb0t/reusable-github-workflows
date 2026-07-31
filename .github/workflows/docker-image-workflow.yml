@@ -288,7 +288,14 @@ jobs:
     # Same trap: this tolerates `build-multi` being skipped (a repo whose
     # targets are all wave-1), but without `always()` GitHub skips wave 1 too
     # and nothing gets built at all.
-    if: always() && needs.plan-multi.outputs.wave1 != '[]' && (needs.build-multi.result == 'success' || needs.build-multi.result == 'skipped')
+    # plan-multi.result == 'success' is load-bearing, not belt-and-braces. When
+    # the caller sets no build_targets, plan-multi is SKIPPED and every output
+    # of a skipped job is the empty string -- so `outputs.wave1 != '[]'` is TRUE
+    # ('' is not '[]'), this job is scheduled, and its matrix then evaluates
+    # fromJson('') and cannot be built. That fails the whole run with no failed
+    # job, no step logs and no retry available, which is exactly as confusing as
+    # it sounds. build-multi already gates on the result for the same reason.
+    if: always() && needs.plan-multi.result == 'success' && needs.plan-multi.outputs.wave1 != '[]' && (needs.build-multi.result == 'success' || needs.build-multi.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
