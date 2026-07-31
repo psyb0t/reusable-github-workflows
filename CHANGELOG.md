@@ -4,6 +4,17 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.32.1 — 2026-07-31
+
+- **`python-package-workflow.yml`: upgrade `pip` and `setuptools` before
+  auditing.** `pip-audit` audits the whole environment, not just the project's
+  dependencies — including the `setuptools` the runner image shipped with, which
+  lags far enough behind to carry its own advisories (observed: `setuptools`
+  65.5.0 flagged with a fix in 83.0.0, on a repo that never declared it).
+  Upgrading first keeps the report about the project's own dependency tree
+  instead of the runner's ambient one, which nobody can fix from a caller repo
+  and which would otherwise fail every Python repo at once for the same reason.
+
 ## v0.32.0 — 2026-07-31
 
 Backoff retries on the network operations across every workflow, and a

@@ -240,6 +240,14 @@ jobs:
           # times and report the same failure slower.
           retry pip install pip-audit==2.8.0
 
+          # pip-audit audits the whole environment, which includes the pip and
+          # setuptools the runner image shipped with -- and those lag far enough
+          # behind to carry their own advisories. Upgrading them first keeps the
+          # report about THIS project's dependencies instead of the runner's
+          # ambient ones, which nobody here can fix and which would otherwise
+          # fail the job on every repo at once.
+          retry pip install --upgrade pip setuptools
+
           pip-audit --strict --progress-spinner=off
 
   pypi-publish:
