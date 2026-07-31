@@ -4,6 +4,29 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.30.0 — 2026-07-31
+
+**Fixes mirrors silently freezing after their first run.** Anyone using
+`git-mirror.yml` with GitLab should take this.
+
+- **GitLab protects the default branch of a new project automatically**, with
+  `allow_force_push: false`. A mirror force-pushes, so every run after the first
+  was rejected with `You are not allowed to force push code to a protected
+  branch (pre-receive hook declined)`.
+- **The first run succeeds**, because it *creates* the branch rather than
+  force-pushing over one — which is what makes this so nasty. Setup looks
+  perfect, the project is there with all its refs, and the mirror then sits
+  frozen at that initial snapshot while every later run fails. Observed in the
+  wild: 46 repos green on their first mirror and failing on every push since.
+- The job now **removes every protected-branch rule** on the target after
+  ensuring the project exists. All of them, not just the default branch, because
+  a wildcard rule like `release/*` rejects a force push the same way. Branch
+  protection is meaningless on a read-only mirror. Wildcard names are URI-encoded
+  so the slash does not 404 the request.
+- Failing to unprotect is a warning rather than an error, and it names the branch
+  whose force push will be rejected, so the cause shows up in the log instead of
+  as a confusing push failure further down.
+
 ## v0.29.1 — 2026-07-31
 
 This repo now archives itself, which it did not.

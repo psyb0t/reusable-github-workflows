@@ -351,6 +351,38 @@ jobs:
             exit 1
           fi
 
+          # GitLab protects the default branch of a new project automatically,
+          # with allow_force_push false. A mirror force-pushes, so every run
+          # after the very first one is rejected with "You are not allowed to
+          # force push code to a protected branch". The first run succeeds
+          # because it CREATES the branch rather than force-pushing over it,
+          # which makes this fail silently at setup time and only bite later --
+          # the mirror sits frozen at its initial snapshot looking healthy.
+          #
+          # Branch protection is meaningless on a read-only mirror, so every
+          # protected branch is removed rather than just the default one:
+          # wildcard rules would reject the same way.
+          protected=$(curl -sS "${auth[@]}" \
+            "https://gitlab.com/api/v4/projects/${encoded}/protected_branches" \
+            | jq -r '.[].name' 2>/dev/null || true)
+
+          if [ -n "${protected}" ]; then
+            while IFS= read -r branch_name; do
+              [ -n "${branch_name}" ] || continue
+
+              # The name goes in a URL path, so a wildcard rule like "release/*"
+              # has to be encoded or the request 404s on the slash.
+              encoded_branch=$(jq -rn --arg b "${branch_name}" '$b|@uri')
+
+              if curl -sS --fail-with-body -o /dev/null -X DELETE "${auth[@]}" \
+                "https://gitlab.com/api/v4/projects/${encoded}/protected_branches/${encoded_branch}" 2>&1; then
+                echo "unprotected ${branch_name}"
+              else
+                echo "::warning::could not unprotect ${branch_name}; a force push to it will be rejected"
+              fi
+            done <<< "${protected}"
+          fi
+
           # Read outside the sync_metadata guard: the README injection below
           # needs the homepage even when project-metadata syncing is off.
           homepage=$(gh api "repos/${SOURCE}" --jq '.homepage // ""')
