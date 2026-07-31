@@ -4,6 +4,20 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.29.1 — 2026-07-31
+
+This repo now archives itself, which it did not.
+
+- **Added `.github/workflows/archive-self.yml`.** It could not be called
+  `archive.yml` — that name belongs to the reusable definition this repo
+  publishes — and the collision is exactly why the gap would have survived:
+  anything checking "does this repo have an `archive.yml`" finds one and moves
+  on. What it finds is a `workflow_call` definition, which never fires on its
+  own. The identical collision hid the mirror gap in `v0.27.1`.
+- Its cron slot was picked to not collide with any of the per-repo staggered
+  slots, so it does not land on a rate-limited service at the same minute as
+  another repo.
+
 ## v0.29.0 — 2026-07-31
 
 `archive.yml` can now capture outlinks — the pages your README links to — which
