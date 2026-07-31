@@ -133,6 +133,15 @@ on:
 
 permissions: {}
 
+# A commit and its tag pushed together start two runs about a second apart. Both
+# would look the target up, both see 404, and both try to create it -- one wins
+# and the other fails. Serialize per caller repo and platform so the second run
+# queues behind the first and finds the repo already there. Nothing is cancelled:
+# each run mirrors a real ref and the later one must still push its own.
+concurrency:
+  group: git-mirror-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   codeberg:
     if: inputs.codeberg_enabled
@@ -173,10 +182,24 @@ jobs:
             fi
 
             echo "creating ${OWNER}/${REPO} on Codeberg"
-            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+            if ! created=$(curl -sS --fail-with-body -X POST "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg n "${REPO}" '{name: $n, private: false, auto_init: false}')" \
-              "${api}/user/repos"
+              "${api}/user/repos" 2>&1); then
+
+              # Concurrency should keep runs from racing here, but a caller can
+              # still start two by other means. If the repo exists now, someone
+              # else created it and this run can carry on.
+              recheck=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" \
+                "${api}/repos/${OWNER}/${REPO}")
+
+              if [ "${recheck}" = "200" ]; then
+                echo "already created by a concurrent run; continuing"
+              else
+                echo "::error::Codeberg create failed: ${created}" >&2
+                exit 1
+              fi
+            fi
           elif [ "${status}" != "200" ]; then
             echo "::error::Codeberg lookup returned HTTP ${status}" >&2
             exit 1
@@ -185,10 +208,13 @@ jobs:
           if [ "${SYNC_METADATA}" = "true" ]; then
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
 
-            curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg d "$(printf '%s' "${meta}" | jq -r .description)" '{description: $d}')" \
-              "${api}/repos/${OWNER}/${REPO}"
+              "${api}/repos/${OWNER}/${REPO}" 2>&1); then
+              echo "::error::Codeberg description sync failed: ${out}" >&2
+              exit 1
+            fi
 
             # Gitea validates every topic and rejects the WHOLE array if one is
             # bad: lowercase, [a-z0-9-] only, must start alphanumeric, <=35
@@ -206,10 +232,13 @@ jobs:
               | .[0:25]
             ')
 
-            curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --argjson t "${topics}" '{topics: $t}')" \
-              "${api}/repos/${OWNER}/${REPO}/topics"
+              "${api}/repos/${OWNER}/${REPO}/topics" 2>&1); then
+              echo "::error::Codeberg topics sync failed: ${out}" >&2
+              exit 1
+            fi
           fi
 
           host="${BASE#https://}"
@@ -266,10 +295,24 @@ jobs:
             fi
 
             echo "creating ${OWNER}/${REPO} on GitLab"
-            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+            if ! created=$(curl -sS --fail-with-body -X POST "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg n "${REPO}" '{name: $n, path: $n, visibility: "public"}')" \
-              "https://gitlab.com/api/v4/projects"
+              "https://gitlab.com/api/v4/projects" 2>&1); then
+
+              # Concurrency should keep runs from racing here, but a caller can
+              # still start two by other means. If the project exists now,
+              # someone else created it and this run can carry on.
+              recheck=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" \
+                "https://gitlab.com/api/v4/projects/${encoded}")
+
+              if [ "${recheck}" = "200" ]; then
+                echo "already created by a concurrent run; continuing"
+              else
+                echo "::error::GitLab create failed: ${created}" >&2
+                exit 1
+              fi
+            fi
           elif [ "${status}" != "200" ]; then
             echo "::error::GitLab lookup returned HTTP ${status}" >&2
             exit 1
@@ -278,10 +321,13 @@ jobs:
           if [ "${SYNC_METADATA}" = "true" ]; then
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
 
-            curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(printf '%s' "${meta}" | jq -c '{description: .description, topics: .topics}')" \
-              "https://gitlab.com/api/v4/projects/${encoded}"
+              "https://gitlab.com/api/v4/projects/${encoded}" 2>&1); then
+              echo "::error::GitLab metadata sync failed: ${out}" >&2
+              exit 1
+            fi
           fi
 
           git clone --bare --quiet \
@@ -340,10 +386,24 @@ jobs:
             fi
 
             echo "creating ${OWNER}/${REPO} on Gitee"
-            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+            if ! created=$(curl -sS --fail-with-body -X POST "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg n "${REPO}" '{name: $n, path: $n, private: false}')" \
-              "${api}/user/repos"
+              "${api}/user/repos" 2>&1); then
+
+              # Concurrency should keep runs from racing here, but a caller can
+              # still start two by other means. Gitee answers a duplicate create
+              # with 422; if the repo exists now, this run can carry on.
+              recheck=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" \
+                "${api}/repos/${OWNER}/${REPO}")
+
+              if [ "${recheck}" = "200" ]; then
+                echo "already created by a concurrent run; continuing"
+              else
+                echo "::error::Gitee create failed: ${created}" >&2
+                exit 1
+              fi
+            fi
           elif [ "${status}" != "200" ]; then
             echo "::error::Gitee lookup returned HTTP ${status}" >&2
             exit 1
@@ -356,10 +416,13 @@ jobs:
             # unchanged alongside the description.
             description=$(gh api "repos/${SOURCE}" --jq '.description // ""')
 
-            curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg n "${REPO}" --arg d "${description}" '{name: $n, description: $d}')" \
-              "${api}/repos/${OWNER}/${REPO}"
+              "${api}/repos/${OWNER}/${REPO}" 2>&1); then
+              echo "::error::Gitee description sync failed: ${out}" >&2
+              exit 1
+            fi
           fi
 
           git clone --bare --quiet \
@@ -421,10 +484,23 @@ jobs:
             fi
 
             echo "creating ${WORKSPACE}/${REPO} on Bitbucket"
-            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+            if ! created=$(curl -sS --fail-with-body -X POST "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d '{"scm": "git", "is_private": false}' \
-              "${api}"
+              "${api}" 2>&1); then
+
+              # Concurrency should keep runs from racing here, but a caller can
+              # still start two by other means. If the repo exists now, someone
+              # else created it and this run can carry on.
+              recheck=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" "${api}")
+
+              if [ "${recheck}" = "200" ]; then
+                echo "already created by a concurrent run; continuing"
+              else
+                echo "::error::Bitbucket create failed: ${created}" >&2
+                exit 1
+              fi
+            fi
           elif [ "${status}" != "200" ]; then
             echo "::error::Bitbucket lookup returned HTTP ${status}" >&2
             exit 1
@@ -434,10 +510,13 @@ jobs:
             # Bitbucket has no topics/tags concept -- description only.
             description=$(gh api "repos/${SOURCE}" --jq '.description // ""')
 
-            curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg d "${description}" '{description: $d}')" \
-              "${api}"
+              "${api}" 2>&1); then
+              echo "::error::Bitbucket description sync failed: ${out}" >&2
+              exit 1
+            fi
           fi
 
           git clone --bare --quiet \

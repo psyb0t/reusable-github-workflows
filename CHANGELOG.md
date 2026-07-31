@@ -4,6 +4,25 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.22.1 — 2026-07-31
+
+Fixes two defects in `git-mirror.yml` that the first live run surfaced.
+
+- **A commit and its tag pushed together raced each other.** Both runs start
+  about a second apart, both look the target up, both see 404, and both try to
+  create it — one wins and the other dies on the duplicate. The workflow now
+  serializes per caller repository (`concurrency`, without `cancel-in-progress`,
+  since each run mirrors a real ref and the later one still has to push its
+  own). Repo creation also tolerates losing the race directly: on a failed
+  create it re-checks existence and continues if the repo is there, so a caller
+  that starts two runs by other means still succeeds.
+- **A failed API call hid the reason.** `--fail-with-body` correctly failed the
+  step, but `-o /dev/null` discarded the very body that explains why — the first
+  failure reported only `curl: (22) ... error: 422`, with the actual message
+  (`已存在同地址仓库`, "a repo with the same address already exists") thrown away.
+  Every create and metadata call now captures the response and puts it in the
+  `::error::` annotation, naming the platform and the operation that failed.
+
 ## v0.22.0 — 2026-07-31
 
 - **New `git-mirror.yml`.** Push-mirrors the caller repo to Codeberg, GitLab,
