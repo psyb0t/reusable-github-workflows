@@ -7,10 +7,12 @@ name: Go Workflow
 # call this workflow from trusted repos with branch protection on the workflow
 # files.
 #
-# DISABLING A STEP: any *_command accepts "-" (preferred) or "" to mean "skip
-# this entirely". "-" is the documented form because an empty string in a
-# caller's YAML is indistinguishable from a templating accident, while "-"
-# reads as a deliberate opt-out.
+# DISABLING A STEP: dep_command, lint_command and test_command accept "-"
+# (preferred) or "" to mean "skip this entirely". "-" is the documented form
+# because an empty string in a caller's YAML is indistinguishable from a
+# templating accident, while "-" reads as a deliberate opt-out.
+# generate_command has no "-" escape — has_codegen (default false) is the only
+# switch for that job, so there is exactly one way to turn it off.
 
 on:
   workflow_call:
@@ -35,8 +37,14 @@ on:
         required: false
         default: "make dep"
         type: string
+      has_codegen:
+        description: "This repo has committed generated files. Turns on the codegen-drift job, which runs generate_command and fails if the tree moved afterwards. Off by default: a repo that generates nothing has no drift to check, and defaulting it on breaks every caller that has no generate target."
+        required: false
+        default: false
+        type: boolean
+
       generate_command:
-        description: "Command that regenerates committed generated files. The tree must be unchanged afterwards. Set to '-' to skip the codegen-drift job."
+        description: "Command that regenerates the committed generated files, run only when has_codegen is true. The tree must be unchanged afterwards. Unlike the other *_command inputs this has no '-' escape, because has_codegen already decides whether the job runs at all."
         required: false
         default: "make generate"
         type: string
@@ -100,6 +108,7 @@ jobs:
           echo "test_command: ${{ inputs.test_command }}"
           echo "lint_command: ${{ inputs.lint_command }}"
           echo "dep_command: ${{ inputs.dep_command }}"
+          echo "has_codegen: ${{ inputs.has_codegen }}"
           echo "generate_command: ${{ inputs.generate_command }}"
           echo "is_vendored: ${{ inputs.is_vendored }}"
           echo "::endgroup::"
@@ -109,7 +118,7 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
-    if: inputs.lint_command != ''
+    if: inputs.lint_command != '' && inputs.lint_command != '-'
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -132,7 +141,7 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
-    if: inputs.test_command != ''
+    if: inputs.test_command != '' && inputs.test_command != '-'
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -176,7 +185,7 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
-    if: inputs.generate_command != '' && inputs.generate_command != '-'
+    if: inputs.has_codegen
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3

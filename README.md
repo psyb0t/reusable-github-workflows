@@ -266,9 +266,9 @@ Tool cache (`/opt/hostedtoolcache`) and swap are **not** touched (the tool cache
 
 Lints + tests + scans + (on tag) cuts a GitHub Release.
 
-- Every `*_command` input accepts `-` (preferred) or `""` to skip that step entirely. `-` is preferred because an empty string in a caller's YAML is indistinguishable from a templating accident, while `-` reads as a deliberate opt-out.
+- `dep_command`, `lint_command` and `test_command` accept `-` (preferred) or `""` to skip that step entirely. `-` is preferred because an empty string in a caller's YAML is indistinguishable from a templating accident, while `-` reads as a deliberate opt-out. `generate_command` is the exception — it has no `-` escape, because `has_codegen` already decides whether that job runs.
 - Lint job runs unless `lint_command` is disabled. Test job runs unless `test_command` is disabled. Vulnerability scan (`govulncheck@v1.3.0`) runs unless `scan_enabled: false`.
-- Codegen drift (`generate-check` job) runs `generate_command`, then fails if the working tree moved. It catches a source change whose generator was never re-run, and a hand-edit to a generated file that the next regeneration would silently wipe — neither breaks the build, so only a diff finds them. The check is `git status --porcelain`, not `git diff`, so a generator emitting a brand-new uncommitted file is caught too (`.gitignore` is still respected). On by default; set `generate_command: "-"` in repos that generate nothing.
+- Codegen drift (`generate-check` job) runs `generate_command`, then fails if the working tree moved. It catches a source change whose generator was never re-run, and a hand-edit to a generated file that the next regeneration would silently wipe — neither breaks the build, so only a diff finds them. The check is `git status --porcelain`, not `git diff`, so a generator emitting a brand-new uncommitted file is caught too (`.gitignore` is still respected). **Off by default** — set `has_codegen: true` in a repo that commits generated files. A repo that generates nothing has no drift to check and usually has no `generate` target either.
   - The generator must be idempotent. One that stamps a timestamp or hostname, or iterates a map in random order, will fail on every run — pin the generator version (for Go, the `go.mod` `tool` block) rather than disabling the job.
 - Release job runs only on `refs/tags/*`, gated on: `code-checks` succeeded or was skipped, `test` succeeded or was skipped, `generate-check` succeeded or was skipped, and (when `scan_enabled: true`) `security-scan` succeeded.
 - Release notes: the workflow writes a `CHANGELOG.md` in the CI working tree from `git log <prev_tag>..HEAD --pretty='* %s (%h)'` and uses it as the release body. **If your repo already has a hand-written `CHANGELOG.md`, it is overwritten only in the CI workspace** — your committed file is unaffected, but the release body on GitHub will be the auto-generated commit list, not your file. To use a hand-written changelog as the release body, do the release yourself instead of via this workflow.
@@ -282,7 +282,8 @@ Trigger from `push` so it fires on branch and tag pushes.
 |---|---|---|---|
 | `go_version` | string | `"1.26"` | Go toolchain version passed to `actions/setup-go`. |
 | `dep_command` | string | `"make dep"` | Command to install dependencies. Set to `-` to skip it in every job. Also skipped when `is_vendored: true`. |
-| `generate_command` | string | `"make generate"` | Regenerates committed generated files; the job fails if the tree changed afterwards. Set to `-` to skip the codegen-drift job. |
+| `has_codegen` | boolean | `false` | This repo commits generated files. Turns on the codegen-drift job. |
+| `generate_command` | string | `"make generate"` | Regenerates the committed generated files, run only when `has_codegen: true`; the job fails if the tree changed afterwards. |
 | `lint_command` | string | `"make lint"` | Code-checks command. Set to `-` to skip the lint job. |
 | `test_command` | string | `"make test"` | Test command. Set to `-` to skip the test job. |
 | `is_vendored` | boolean | `false` | Whether dependencies are vendored. Skips `dep_command` when true. |

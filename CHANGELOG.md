@@ -4,6 +4,30 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.26.0 — 2026-07-31
+
+`go-workflow.yml`: the codegen-drift gate is now opt-in, and the `-` skip
+convention actually works for the lint and test jobs.
+
+- **Breaking (behavior).** The `generate-check` job no longer runs by default.
+  It is gated on a new **`has_codegen`** boolean input (default `false`) instead
+  of on `generate_command`. When it shipped in `v0.19.0` the job defaulted to on,
+  which meant every caller with no `generate` make target failed with
+  `No rule to make target 'generate'` — and because the release job depends on
+  it, the GitHub Release was skipped on those tags too. Defaulting a check on for
+  repos that have nothing to check was the wrong call; a repo that generates
+  nothing has no drift. Repos that DO commit generated files must now pass
+  `has_codegen: true` to keep the check.
+- **`generate_command` has no `-` escape.** `has_codegen` is the only switch for
+  that job, so there is exactly one way to turn it off rather than two that can
+  contradict each other. Callers that added `generate_command: "-"` to work
+  around the `v0.19.0` default can drop the line — it is inert now, not an error.
+- **Fixed: `-` did not skip the lint or test job.** The documented convention is
+  that a `*_command` input set to `-` opts out of that step, but only
+  `dep_command` was checked for it; `code-checks` and `test` gated on
+  `!= ''` alone. A caller passing `lint_command: "-"` got a job that ran `-` as a
+  shell command and failed, rather than a skipped job. Both now check for `-`.
+
 ## v0.25.0 — 2026-07-31
 
 - **Breaking.** Dropped Bitbucket support from `git-mirror.yml`. The
