@@ -134,6 +134,18 @@ on:
         type: string
         default: "ubuntu-latest"
 
+      publish_attempts:
+        description: "How many times to attempt each publish before giving up. Retries are for ClawHub-side faults only; a rejection of YOUR content fails on the first attempt."
+        required: false
+        type: number
+        default: 4
+
+      fail_on_upstream_error:
+        description: "Fail the job when ClawHub's own service is broken (sandbox/ENOENT/5xx/network) after every attempt. Default false: a release does not go red for an outage you cannot fix. Rejections of your own content ALWAYS fail regardless."
+        required: false
+        type: boolean
+        default: false
+
     secrets:
       clawhub_token:
         description: "ClawHub API token (clh_...) with publish scope"
@@ -301,6 +313,8 @@ jobs:
           OWNER: ${{ inputs.owner }}
           INPUT_VERSION: ${{ inputs.version }}
           DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_ATTEMPTS: ${{ inputs.publish_attempts }}
+          FAIL_ON_UPSTREAM_ERROR: ${{ inputs.fail_on_upstream_error }}
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_REF: ${{ github.ref }}
           SOURCE_COMMIT: ${{ github.sha }}
@@ -345,6 +359,27 @@ jobs:
 
           published=()
           failed=()
+          deferred=()
+
+          # Is a failure ClawHub's problem or ours?
+          #
+          # The discriminator is whether their validator RAN. If it ran and
+          # reported findings, that is this repo's content and must fail the
+          # build. If it could not run at all — sandbox ENOENT, 5xx, network —
+          # that is their infrastructure, and the right response is to retry and
+          # then defer, not to redden someone's release.
+          is_upstream_error() {
+            local err="$1"
+
+            if printf '%s' "$err" | grep -qiE "plugin-inspector-error|could not inspect"; then
+              : # the inspector itself broke; fall through to the upstream match
+            elif printf '%s' "$err" | grep -qiE "blocked publish|validation failed|breakage"; then
+              return 1
+            fi
+
+            printf '%s' "$err" | grep -qiE \
+              "plugin-inspector-error|could not inspect|ENOENT|EACCES|sbx_user|/convex/|convex/packages\.ts|internal server error|bad gateway|service unavailable|gateway time-?out|HTTP (429|5[0-9][0-9])|too many requests|rate ?limit|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network error|reset in [0-9]+s"
+          }
 
           for dir in "${skill_dirs[@]}"; do
             name="$(basename "$dir")"
@@ -380,21 +415,51 @@ jobs:
             [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
 
             out_file="$(mktemp)"
-            if clawhub "${args[@]}" > "$out_file" 2>/tmp/clawhub.err; then
-              slug="$(jq -r '.slug // empty' "$out_file")"
-              version="$(jq -r '.version // empty' "$out_file")"
-              status="$(jq -r '.status // "unknown"' "$out_file")"
-              echo "  ${slug:-$name}@${version:-?} — $status"
-              published+=("${slug:-$name}@${version:-?} ($status)")
-            else
+            attempt=1
+            outcome=""
+            while :; do
+              if clawhub "${args[@]}" > "$out_file" 2>/tmp/clawhub.err; then
+                slug="$(jq -r '.slug // empty' "$out_file")"
+                version="$(jq -r '.version // empty' "$out_file")"
+                status="$(jq -r '.status // "unknown"' "$out_file")"
+                echo "  ${slug:-$name}@${version:-?} — $status"
+                published+=("${slug:-$name}@${version:-?} ($status)"); outcome="ok"; break
+              fi
+
               err="$(cat /tmp/clawhub.err)"
               body="$(cat "$out_file")"
-              if printf '%s%s' "$err" "$body" | grep -qiE "already exists"; then
+              both="$err$body"
+
+              if printf '%s' "$both" | grep -qiE "already exists"; then
                 echo "  $name — already published at this version; skipping"
-                published+=("$name (already published)")
+                published+=("$name (already published)"); outcome="ok"; break
+              fi
+
+              # A rejection of OUR content is final — never retried, never softened.
+              if ! is_upstream_error "$both"; then
+                echo "::error::$name — publish rejected: ${err:-$body}"
+                failed+=("$name"); outcome="rejected"; break
+              fi
+
+              if [ "$attempt" -ge "$PUBLISH_ATTEMPTS" ]; then
+                outcome="upstream"; break
+              fi
+
+              backoff=$((attempt * attempt * 5))
+              echo "  $name — ClawHub-side fault on attempt $attempt/$PUBLISH_ATTEMPTS; retrying in ${backoff}s"
+              echo "    $(printf '%s' "$both" | head -2)"
+              sleep "$backoff"
+              attempt=$((attempt + 1))
+            done
+
+            if [ "$outcome" = "upstream" ]; then
+              if [ "$FAIL_ON_UPSTREAM_ERROR" = "true" ]; then
+                echo "::error::$name — ClawHub unavailable after $PUBLISH_ATTEMPTS attempts: ${err:-$body}"
+                failed+=("$name (ClawHub unavailable)")
               else
-                echo "::error::$name — publish failed: ${err:-$body}"
-                failed+=("$name")
+                echo "::warning::$name — NOT published: ClawHub's service failed on all $PUBLISH_ATTEMPTS attempts. This is a ClawHub-side fault, not a problem with the skill. Re-run this job when their service recovers."
+                echo "    ${err:-$body}"
+                deferred+=("$name")
               fi
             fi
             rm -f "$out_file"
@@ -403,7 +468,12 @@ jobs:
           echo ""
           echo "═══════════════ Skills summary ═══════════════"
           echo "Processed (${#published[@]}):"
-          printf '  ✓ %s\n' "${published[@]}"
+          [ "${#published[@]}" -gt 0 ] && printf '  ✓ %s\n' "${published[@]}"
+          if [ "${#deferred[@]}" -gt 0 ]; then
+            echo "Deferred — ClawHub unavailable (${#deferred[@]}):"
+            printf '  ⏳ %s\n' "${deferred[@]}"
+            echo "Re-run this job to publish them once ClawHub recovers."
+          fi
           if [ "${#failed[@]}" -gt 0 ]; then
             echo "Failed (${#failed[@]}):"
             printf '  ✗ %s\n' "${failed[@]}"
@@ -526,6 +596,8 @@ jobs:
           SITE: ${{ inputs.site }}
           OWNER: ${{ inputs.owner }}
           DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_ATTEMPTS: ${{ inputs.publish_attempts }}
+          FAIL_ON_UPSTREAM_ERROR: ${{ inputs.fail_on_upstream_error }}
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_REF: ${{ github.ref }}
           SOURCE_COMMIT: ${{ github.sha }}
@@ -565,6 +637,27 @@ jobs:
 
           published=()
           failed=()
+          deferred=()
+
+          # Is a failure ClawHub's problem or ours?
+          #
+          # The discriminator is whether their Plugin Inspector RAN. If it ran
+          # and reported findings, that is this repo's content and must fail the
+          # build. If it could not run at all — sandbox ENOENT, 5xx, network —
+          # that is their infrastructure, and the right response is to retry and
+          # then defer, not to redden someone's release.
+          is_upstream_error() {
+            local err="$1"
+
+            if printf '%s' "$err" | grep -qiE "plugin-inspector-error|could not inspect"; then
+              : # the inspector itself broke; fall through to the upstream match
+            elif printf '%s' "$err" | grep -qiE "blocked publish|validation failed|breakage"; then
+              return 1
+            fi
+
+            printf '%s' "$err" | grep -qiE \
+              "plugin-inspector-error|could not inspect|ENOENT|EACCES|sbx_user|/convex/|convex/packages\.ts|internal server error|bad gateway|service unavailable|gateway time-?out|HTTP (429|5[0-9][0-9])|too many requests|rate ?limit|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network error|reset in [0-9]+s"
+          }
 
           for dir in "${plugin_dirs[@]}"; do
             name="$(basename "$dir")"
@@ -596,17 +689,49 @@ jobs:
             [ -n "$OWNER" ] && args+=(--owner "$OWNER")
             [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
 
-            if clawhub "${args[@]}" 2>/tmp/clawhub.plugin.err; then
-              echo "  $name — published"
-              published+=("$name")
-            else
+            attempt=1
+            outcome=""
+            while :; do
+              if clawhub "${args[@]}" 2>/tmp/clawhub.plugin.err; then
+                echo "  $name — published"
+                published+=("$name"); outcome="ok"; break
+              fi
+
               err="$(cat /tmp/clawhub.plugin.err)"
+
               if printf '%s' "$err" | grep -qiE "already exists|already published"; then
                 echo "  $name — already published at this version; skipping"
-                published+=("$name (already published)")
+                published+=("$name (already published)"); outcome="ok"; break
+              fi
+
+              # A rejection of OUR content is final — never retried, never softened.
+              if ! is_upstream_error "$err"; then
+                echo "::error::$name — publish rejected: $err"
+                failed+=("$name"); outcome="rejected"; break
+              fi
+
+              if [ "$attempt" -ge "$PUBLISH_ATTEMPTS" ]; then
+                outcome="upstream"; break
+              fi
+
+              backoff=$((attempt * attempt * 5))
+              echo "  $name — ClawHub-side fault on attempt $attempt/$PUBLISH_ATTEMPTS; retrying in ${backoff}s"
+              echo "    $(printf '%s' "$err" | head -2)"
+              sleep "$backoff"
+              attempt=$((attempt + 1))
+            done
+
+            if [ "$outcome" = "upstream" ]; then
+              # ClawHub's own service never came back. The tag is already cut and
+              # the artifact is unchanged, so this publish can simply be re-run
+              # later; failing the release helps nobody.
+              if [ "$FAIL_ON_UPSTREAM_ERROR" = "true" ]; then
+                echo "::error::$name — ClawHub unavailable after $PUBLISH_ATTEMPTS attempts: $err"
+                failed+=("$name (ClawHub unavailable)")
               else
-                echo "::error::$name — publish failed: $err"
-                failed+=("$name")
+                echo "::warning::$name — NOT published: ClawHub's service failed on all $PUBLISH_ATTEMPTS attempts. This is a ClawHub-side fault, not a problem with the plugin. Re-run this job when their service recovers."
+                echo "    $err"
+                deferred+=("$name")
               fi
             fi
           done
@@ -614,7 +739,12 @@ jobs:
           echo ""
           echo "═══════════════ Plugins summary ═══════════════"
           echo "Processed (${#published[@]}):"
-          printf '  ✓ %s\n' "${published[@]}"
+          [ "${#published[@]}" -gt 0 ] && printf '  ✓ %s\n' "${published[@]}"
+          if [ "${#deferred[@]}" -gt 0 ]; then
+            echo "Deferred — ClawHub unavailable (${#deferred[@]}):"
+            printf '  ⏳ %s\n' "${deferred[@]}"
+            echo "Re-run this job to publish them once ClawHub recovers."
+          fi
           if [ "${#failed[@]}" -gt 0 ]; then
             echo "Failed (${#failed[@]}):"
             printf '  ✗ %s\n' "${failed[@]}"

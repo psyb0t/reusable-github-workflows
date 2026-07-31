@@ -410,6 +410,13 @@ Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the 
 - **No dependency install in CI.** `package publish` packs the source (`npm pack`); a plugin's own dependency tree is resolved by the end user at their install time, never here.
 - Plugin package names are npm-scoped (`@owner/name`); the scope must match a ClawHub owner you control.
 
+**A ClawHub outage does not fail your release.** Publishing distinguishes two kinds of failure and treats them differently:
+
+- **ClawHub-side fault** — their sandbox, service or network broke: `plugin-inspector-error` / "could not inspect", `ENOENT` under `/home/sbx_user*`, a Convex stack trace, HTTP 429/5xx, `ECONNRESET`, `socket hang up`. These are retried `publish_attempts` times with quadratic backoff (5s, 20s, 45s…). If ClawHub never recovers, the item is reported as **deferred** with a `::warning::` and the job still succeeds — the tag is already cut and the artifact is unchanged, so re-running the job later publishes it. Set `fail_on_upstream_error: true` if you would rather the release go red.
+- **Rejection of your content** — their validator ran and found something in your skill or plugin ("blocked publish: N breakages", "validation failed"). This **fails on the first attempt with no retries**, because retrying a real defect just wastes minutes and hides it.
+
+The discriminator is whether their validator *ran*: an inspector that reported findings is your problem, an inspector that could not start is theirs.
+
 ### Inputs
 
 | Input | Type | Default | Description |
@@ -428,6 +435,8 @@ Publishes both **skills** and **plugins** to [ClawHub](https://clawhub.ai) (the 
 | `min_release_age_days` | number | `7` | Refuse to install a CLI version published more recently than this. |
 | `dry_run` | boolean | `false` | Resolve + validate but don't publish. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
+| `publish_attempts` | number | `4` | Attempts per publish before giving up. Retries apply to ClawHub-side faults only. |
+| `fail_on_upstream_error` | boolean | `false` | Fail the job when ClawHub's own service is down after every attempt. Rejections of your content always fail regardless. |
 
 ### Secrets
 

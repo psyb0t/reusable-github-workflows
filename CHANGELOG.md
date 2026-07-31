@@ -4,6 +4,50 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.20.0 — 2026-07-31
+
+Two release-blocking bugs: Docker repos silently stopped cutting GitHub
+Releases, and a ClawHub outage failed the whole pipeline.
+
+### `docker-image-workflow.yml` — releases were silently never created
+
+- **`release-multi`, `update-dockerhub-description` and `build-multi-wave1` now
+  begin their conditions with `always()`.** Each already tried to tolerate an
+  optional dependency being skipped (`|| needs.build-multi-wave1.result ==
+  'skipped'`), but GitHub skips a job as soon as anything in its `needs` is
+  skipped — *before* the `if` is evaluated — so that tolerance was dead code.
+  A repo whose targets produce no wave-1 build therefore pushed its images and
+  passed its scans while `release-multi` was quietly skipped: one consumer had
+  tags through `v0.13.0` with GitHub Releases stopping at `v0.10.0`, and every
+  one of those runs was green. `scan-multi` has carried this guard since it was
+  written; these three were missing it.
+- `build-multi-wave1` had the same defect one level up: a repo whose targets are
+  all wave-1 skips `build-multi`, which skipped wave 1 with it, so nothing built.
+
+### `clawhub-publish.yml` — an outage no longer fails a release
+
+- **`clawhub-publish.yml` retries a publish that fails for ClawHub-side
+  reasons**, `publish_attempts` times (default 4) with quadratic backoff. A real
+  incident motivated this: `publish-plugins` failed two consecutive releases
+  with `plugin-inspector-error: Plugin Inspector could not inspect
+  @owner/pkg@x.y.z: ENOENT: no such file or directory, mkdir '/home/sbx_user…'`
+  — a stack trace from ClawHub's own backend failing to create a sandbox home
+  directory. Every test, lint and skill publish in those runs passed; the
+  release went red for an outage the repo could not affect.
+- **A ClawHub-side fault that never clears is now reported as deferred, not
+  failed.** The item gets a `::warning::` and a `⏳` line in the summary, and the
+  job succeeds. The tag is already cut and the artifact is unchanged, so
+  re-running the job once their service recovers publishes it. Set the new
+  `fail_on_upstream_error: true` to keep the old red-on-outage behavior.
+- **A rejection of your own content still fails on the first attempt, with no
+  retries.** The two cases are told apart by whether ClawHub's validator *ran*:
+  findings reported against your skill or plugin ("blocked publish: N
+  breakages", "validation failed") are yours and fail immediately; an inspector
+  that could not start at all (`could not inspect`, `ENOENT` under
+  `/home/sbx_user*`, Convex stack frames, HTTP 429/5xx, `ECONNRESET`,
+  `socket hang up`, `fetch failed`) is theirs and is retried.
+- Both halves of the workflow — skills and plugins — get the same handling.
+
 ## v0.19.1 — 2026-07-29
 
 `create-badges.yml` now serializes updates to each caller's generated badge branch.

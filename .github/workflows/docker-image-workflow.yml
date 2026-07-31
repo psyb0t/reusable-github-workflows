@@ -285,7 +285,10 @@ jobs:
   # gate on build-multi. Skipped entirely when no target sets "stage": 1.
   build-multi-wave1:
     needs: [plan-multi, build-multi]
-    if: needs.plan-multi.outputs.wave1 != '[]' && (needs.build-multi.result == 'success' || needs.build-multi.result == 'skipped')
+    # Same trap: this tolerates `build-multi` being skipped (a repo whose
+    # targets are all wave-1), but without `always()` GitHub skips wave 1 too
+    # and nothing gets built at all.
+    if: always() && needs.plan-multi.outputs.wave1 != '[]' && (needs.build-multi.result == 'success' || needs.build-multi.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
@@ -352,7 +355,13 @@ jobs:
 
   release-multi:
     needs: [build-multi, build-multi-wave1]
-    if: startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
+    # `always()` is load-bearing, not decoration. Without it GitHub skips this
+    # job the moment `build-multi-wave1` is skipped — BEFORE the `if` is
+    # evaluated — so the `|| ... == 'skipped'` tolerance below never gets a
+    # chance to run. A repo with no wave-1 targets therefore built and pushed
+    # its images but never cut a GitHub Release. `scan-multi` has carried this
+    # guard all along; these jobs were missing it.
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: write
@@ -394,7 +403,8 @@ jobs:
 
   update-dockerhub-description:
     needs: [build-multi, build-multi-wave1]
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
+    # Same skipped-dependency trap as release-multi above — see the note there.
+    if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
