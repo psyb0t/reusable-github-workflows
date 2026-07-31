@@ -561,12 +561,14 @@ Two implementation details are deliberate and worth knowing before you copy the 
 
 Platform differences that aren't obvious:
 
-| Platform | Description | Topics | Notes |
-|---|---|---|---|
-| Codeberg (Gitea) | yes | yes | Gitea rejects the whole topics array if one entry is invalid, so topics are lowercased, stripped to `[a-z0-9-]`, de-duped and capped at 25. |
-| GitLab | yes | yes | Project creation needs a token with `api` scope, not just `write_repository`. |
-| Gitee | yes | **no** | `name` is **required** on the repo-edit call — a description-only body is rejected — so it's sent unchanged alongside the description. |
-| Bitbucket | yes | **no** | Namespaces repos under a workspace, so `bitbucket_workspace` is required. Has no topics concept at all. |
+| Platform | Description | Topics | Project URL | Notes |
+|---|---|---|---|---|
+| Codeberg (Gitea) | yes | yes | yes (`website`) | Gitea rejects the whole topics array if one entry is invalid, so topics are lowercased, stripped to `[a-z0-9-]`, de-duped and capped at 25. |
+| GitLab | yes | yes | **no** | Project creation needs a token with `api` scope, not just `write_repository`. Its project object exposes only derived URLs (`web_url`, `readme_url`, …), none writable, so the homepage has nowhere to go. |
+| Gitee | yes | **no** | yes (`homepage`) | `name` is **required** on the repo-edit call — a body without it is rejected — so it's sent unchanged. See the visibility note below. |
+| Bitbucket | yes | **no** | yes (`website`) | Namespaces repos under a workspace, so `bitbucket_workspace` is required. |
+
+**Gitee visibility.** Gitee requires a mobile number bound to the account before any repository can be public. Rather than refusing a `private: false` create, it accepts the call and creates a **private** repo — so the mirror runs green while the result is invisible to everyone else. The Gitee job re-reads visibility after creating and warns when this happens. Flipping such a repo afterwards returns `422` with `仓库转公开需绑定手机号码` ("making a repository public requires binding a phone number"); that's an account setting, not something the workflow can fix.
 
 ### Inputs
 

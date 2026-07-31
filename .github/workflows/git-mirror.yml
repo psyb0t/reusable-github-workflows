@@ -3,9 +3,16 @@ name: Git Mirror
 # Push-mirrors this repository to Codeberg, GitLab, Gitee and/or Bitbucket, and
 # syncs the GitHub description + topics to each one that supports them.
 #
-# Topics support is NOT universal -- only Codeberg (Gitea) and GitLab have the
-# concept. Gitee's repo-edit endpoint has no topics field and Bitbucket has no
-# topics concept at all, so those two sync the description only.
+# What syncs where is NOT uniform, because the platforms genuinely differ:
+#
+#   platform   description   topics   project URL
+#   Codeberg   yes           yes      yes (`website`)
+#   GitLab     yes           yes      NO -- no such field on a project
+#   Gitee      yes           NO       yes (`homepage`)
+#   Bitbucket  yes           NO       yes (`website`)
+#
+# GitLab's project object exposes only derived URLs (`web_url`, `readme_url`,
+# ...), none of them writable, so the GitHub homepage has nowhere to go there.
 #
 # Every target is OPT-IN and independent: enable only the ones you want, and a
 # failure on one does not stop the others (separate jobs, no `needs`).
@@ -206,13 +213,14 @@ jobs:
           fi
 
           if [ "${SYNC_METADATA}" = "true" ]; then
-            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
+            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // ""), topics: (.topics // [])}')
 
+            # Gitea calls the project URL `website`.
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(jq -n --arg d "$(printf '%s' "${meta}" | jq -r .description)" '{description: $d}')" \
+              -d "$(printf '%s' "${meta}" | jq -c '{description: .description, website: .homepage}')" \
               "${api}/repos/${OWNER}/${REPO}" 2>&1); then
-              echo "::error::Codeberg description sync failed: ${out}" >&2
+              echo "::error::Codeberg description/website sync failed: ${out}" >&2
               exit 1
             fi
 
@@ -404,23 +412,35 @@ jobs:
                 exit 1
               fi
             fi
+
+            # Gitee silently creates the repo PRIVATE when the account cannot
+            # publish: it requires a bound mobile number before any repo can be
+            # public, and it ignores `private: false` rather than refusing. The
+            # mirror still works, but the result is invisible to everyone else,
+            # so say so instead of leaving a private repo looking like success.
+            visibility=$(curl -sS "${auth[@]}" "${api}/repos/${OWNER}/${REPO}" \
+              | jq -r '.private')
+
+            if [ "${visibility}" = "true" ]; then
+              echo "::warning::Gitee created ${OWNER}/${REPO} as PRIVATE and ignored the public setting. Gitee requires a mobile number bound to the account before a repository can be public — bind one at gitee.com and flip the repo to public, or the mirror stays invisible."
+            fi
           elif [ "${status}" != "200" ]; then
             echo "::error::Gitee lookup returned HTTP ${status}" >&2
             exit 1
           fi
 
           if [ "${SYNC_METADATA}" = "true" ]; then
-            # Gitee has no topics field on the repo-edit endpoint, so this is
-            # description-only. `name` is REQUIRED on the PATCH -- unlike Gitea
-            # and GitLab, a description-only body is rejected -- so it is sent
-            # unchanged alongside the description.
-            description=$(gh api "repos/${SOURCE}" --jq '.description // ""')
+            # Gitee has no topics field on the repo-edit endpoint, so this syncs
+            # the description and the project URL (which it calls `homepage`).
+            # `name` is REQUIRED on the PATCH -- unlike Gitea and GitLab, a body
+            # without it is rejected -- so it is sent unchanged.
+            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
 
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(jq -n --arg n "${REPO}" --arg d "${description}" '{name: $n, description: $d}')" \
+              -d "$(printf '%s' "${meta}" | jq -c --arg n "${REPO}" '{name: $n, description: .description, homepage: .homepage}')" \
               "${api}/repos/${OWNER}/${REPO}" 2>&1); then
-              echo "::error::Gitee description sync failed: ${out}" >&2
+              echo "::error::Gitee description/homepage sync failed: ${out}" >&2
               exit 1
             fi
           fi
@@ -507,14 +527,15 @@ jobs:
           fi
 
           if [ "${SYNC_METADATA}" = "true" ]; then
-            # Bitbucket has no topics/tags concept -- description only.
-            description=$(gh api "repos/${SOURCE}" --jq '.description // ""')
+            # Bitbucket has no topics/tags concept, so this syncs the
+            # description and the project URL (which it calls `website`).
+            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
 
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(jq -n --arg d "${description}" '{description: $d}')" \
+              -d "$(printf '%s' "${meta}" | jq -c '{description: .description, website: .homepage}')" \
               "${api}" 2>&1); then
-              echo "::error::Bitbucket description sync failed: ${out}" >&2
+              echo "::error::Bitbucket description/website sync failed: ${out}" >&2
               exit 1
             fi
           fi

@@ -4,6 +4,31 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.23.0 — 2026-07-31
+
+- **`git-mirror.yml` now syncs the GitHub homepage URL** to every target that
+  has somewhere to put it. What each platform supports differs, and the
+  workflow header documents the full matrix:
+
+  | platform | description | topics | project URL |
+  |---|---|---|---|
+  | Codeberg | yes | yes | yes (`website`) |
+  | GitLab | yes | yes | no |
+  | Gitee | yes | no | yes (`homepage`) |
+  | Bitbucket | yes | no | yes (`website`) |
+
+  GitLab's project object exposes only derived URLs (`web_url`, `readme_url`,
+  and friends), none of them writable, so the homepage has nowhere to go there.
+- **Warn when Gitee creates the repository private.** Gitee requires a mobile
+  number bound to the account before any repository can be public, and rather
+  than refusing a `private: false` create it accepts the call and creates a
+  PRIVATE repo — so the mirror runs green while the result is invisible to
+  everyone. The Gitee job now re-reads visibility after creating and emits a
+  warning naming the cause and the fix. Trying to flip such a repo afterwards
+  returns `422` with `仓库转公开需绑定手机号码` ("making a repository public
+  requires binding a phone number"), which is an account setting, not something
+  a workflow can resolve.
+
 ## v0.22.1 — 2026-07-31
 
 Fixes two defects in `git-mirror.yml` that the first live run surfaced.
