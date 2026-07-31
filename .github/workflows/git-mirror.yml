@@ -14,6 +14,14 @@ name: Git Mirror
 # GitLab's project object exposes only derived URLs (`web_url`, `readme_url`,
 # ...), none of them writable, so the GitHub homepage has nowhere to go there.
 #
+# The synced description is prefixed (`description_prefix`, default `[mirror] `)
+# so a visitor landing on a copy can tell it is one, and capped at
+# `description_max_length` characters, cut to end in `...` when it would exceed
+# that. The cap is in CHARACTERS, not bytes: GitLab and Gitee both reject past
+# 2000 and Gitee states its limit that way ("最长为 2000 个字符"), so the
+# truncation runs through jq, which counts codepoints. Bash `${#var}` counts
+# bytes and would cut a description containing any multi-byte character short.
+#
 # Every target is OPT-IN and independent: enable only the ones you want, and a
 # failure on one does not stop the others (separate jobs, no `needs`).
 #
@@ -86,10 +94,22 @@ on:
         default: true
 
       sync_metadata:
-        description: "Sync the GitHub description (and topics, where supported)"
+        description: "Sync the GitHub description (and topics/project URL, where supported)"
         required: false
         type: boolean
         default: true
+
+      description_prefix:
+        description: "Prepended to the synced description so a visitor can tell the copy from the original. Empty string disables it."
+        required: false
+        type: string
+        default: "[mirror] "
+
+      description_max_length:
+        description: "Cap on the synced description, in CHARACTERS (not bytes). Over it, the text is cut and ends in '...'. GitLab and Gitee both reject anything past 2000."
+        required: false
+        type: number
+        default: 2000
 
       prune:
         description: "Delete refs on the target that no longer exist here"
@@ -167,6 +187,8 @@ jobs:
           SOURCE: ${{ github.repository }}
           CREATE_MISSING: ${{ inputs.create_missing }}
           SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PREFIX: ${{ inputs.description_prefix }}
+          MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
         run: |
           set -euo pipefail
@@ -215,10 +237,18 @@ jobs:
           if [ "${SYNC_METADATA}" = "true" ]; then
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // ""), topics: (.topics // [])}')
 
+            # Mark the copy, then cap it. jq counts codepoints, so the cap is in
+            # characters like the platforms' own limits -- bash ${#var} would be
+            # bytes and would cut a multi-byte description short.
+            description=$(printf '%s' "${meta}" | jq -r --arg p "${PREFIX}" --argjson max "${MAXLEN}" '
+              (if .description == "" then ($p | sub(" +$"; "")) else ($p + .description) end)
+              | if length > $max then .[0:($max - 3)] + "..." else . end
+            ')
+
             # Gitea calls the project URL `website`.
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(printf '%s' "${meta}" | jq -c '{description: .description, website: .homepage}')" \
+              -d "$(printf '%s' "${meta}" | jq -c --arg d "${description}" '{description: $d, website: .homepage}')" \
               "${api}/repos/${OWNER}/${REPO}" 2>&1); then
               echo "::error::Codeberg description/website sync failed: ${out}" >&2
               exit 1
@@ -279,6 +309,8 @@ jobs:
           SOURCE: ${{ github.repository }}
           CREATE_MISSING: ${{ inputs.create_missing }}
           SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PREFIX: ${{ inputs.description_prefix }}
+          MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
         run: |
           set -euo pipefail
@@ -329,9 +361,16 @@ jobs:
           if [ "${SYNC_METADATA}" = "true" ]; then
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
 
+            # Mark the copy, then cap it. jq counts codepoints, so the cap is in
+            # characters like GitLab's own limit -- bash ${#var} would be bytes.
+            description=$(printf '%s' "${meta}" | jq -r --arg p "${PREFIX}" --argjson max "${MAXLEN}" '
+              (if .description == "" then ($p | sub(" +$"; "")) else ($p + .description) end)
+              | if length > $max then .[0:($max - 3)] + "..." else . end
+            ')
+
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(printf '%s' "${meta}" | jq -c '{description: .description, topics: .topics}')" \
+              -d "$(printf '%s' "${meta}" | jq -c --arg d "${description}" '{description: $d, topics: .topics}')" \
               "https://gitlab.com/api/v4/projects/${encoded}" 2>&1); then
               echo "::error::GitLab metadata sync failed: ${out}" >&2
               exit 1
@@ -368,6 +407,8 @@ jobs:
           SOURCE: ${{ github.repository }}
           CREATE_MISSING: ${{ inputs.create_missing }}
           SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PREFIX: ${{ inputs.description_prefix }}
+          MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
         run: |
           set -euo pipefail
@@ -436,9 +477,17 @@ jobs:
             # without it is rejected -- so it is sent unchanged.
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
 
+            # Mark the copy, then cap it. Gitee states its own limit in
+            # characters ("最长为 2000 个字符"), and jq counts codepoints, so the
+            # two agree -- bash ${#var} would be bytes and would cut short.
+            description=$(printf '%s' "${meta}" | jq -r --arg p "${PREFIX}" --argjson max "${MAXLEN}" '
+              (if .description == "" then ($p | sub(" +$"; "")) else ($p + .description) end)
+              | if length > $max then .[0:($max - 3)] + "..." else . end
+            ')
+
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(printf '%s' "${meta}" | jq -c --arg n "${REPO}" '{name: $n, description: .description, homepage: .homepage}')" \
+              -d "$(printf '%s' "${meta}" | jq -c --arg n "${REPO}" --arg d "${description}" '{name: $n, description: $d, homepage: .homepage}')" \
               "${api}/repos/${OWNER}/${REPO}" 2>&1); then
               echo "::error::Gitee description/homepage sync failed: ${out}" >&2
               exit 1
@@ -475,6 +524,8 @@ jobs:
           SOURCE: ${{ github.repository }}
           CREATE_MISSING: ${{ inputs.create_missing }}
           SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PREFIX: ${{ inputs.description_prefix }}
+          MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
         run: |
           set -euo pipefail
@@ -531,9 +582,16 @@ jobs:
             # description and the project URL (which it calls `website`).
             meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
 
+            # Mark the copy, then cap it. jq counts codepoints, so the cap is in
+            # characters -- bash ${#var} would be bytes and would cut short.
+            description=$(printf '%s' "${meta}" | jq -r --arg p "${PREFIX}" --argjson max "${MAXLEN}" '
+              (if .description == "" then ($p | sub(" +$"; "")) else ($p + .description) end)
+              | if length > $max then .[0:($max - 3)] + "..." else . end
+            ')
+
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
-              -d "$(printf '%s' "${meta}" | jq -c '{description: .description, website: .homepage}')" \
+              -d "$(printf '%s' "${meta}" | jq -c --arg d "${description}" '{description: $d, website: .homepage}')" \
               "${api}" 2>&1); then
               echo "::error::Bitbucket description/website sync failed: ${out}" >&2
               exit 1

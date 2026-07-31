@@ -559,6 +559,8 @@ Two implementation details are deliberate and worth knowing before you copy the 
 - **It bare-clones the source instead of `actions/checkout` + `git push --all`.** A checkout creates exactly ONE local branch — every other branch stays a remote-tracking ref — so `--all` silently mirrors a single branch and quietly drops the rest. The bare clone carries all heads and tags, and the push uses explicit `+refs/heads/*` / `+refs/tags/*` refspecs.
 - **Every API call uses `curl --fail-with-body`, and the response body ends up in the error annotation.** Plain `curl -s` exits 0 on 401 / 404 / 500, so `set -euo pipefail` does *not* catch a revoked token or a missing scope — the step would go green having synced nothing. Discarding the body with `-o /dev/null` is almost as bad: the first live failure reported nothing but `curl: (22) ... error: 422`, with the message explaining it thrown away.
 
+The synced description is prefixed with `[mirror] ` so a visitor landing on a copy can tell it's one, and capped at `description_max_length`, cut to end in `...` when it would exceed that. **The cap is in characters, not bytes** — GitLab and Gitee both reject anything past 2000 and Gitee states its limit that way (`最长为 2000 个字符`), so the truncation runs through `jq`, which counts codepoints. Bash's `${#var}` counts bytes and would cut a description containing any multi-byte character short of the real limit.
+
 Pushing a commit and its tag together starts two runs about a second apart, so runs are serialized per caller repository (without `cancel-in-progress` — each one carries a real ref that still has to reach the targets). Repo creation tolerates losing that race anyway: on a failed create it re-checks existence and continues if the repo is there.
 
 Platform differences that aren't obvious:
@@ -581,7 +583,9 @@ Platform differences that aren't obvious:
 | `gitee_enabled` | `false` | Mirror to Gitee. |
 | `bitbucket_enabled` | `false` | Mirror to Bitbucket. |
 | `create_missing` | `true` | Create the repo on the target when it doesn't exist yet. |
-| `sync_metadata` | `true` | Sync the GitHub description (and topics, where supported). |
+| `sync_metadata` | `true` | Sync the GitHub description (and topics / project URL, where supported). |
+| `description_prefix` | `[mirror] ` | Prepended to the synced description so a visitor can tell a copy from the original. Empty string disables it. |
+| `description_max_length` | `2000` | Cap on the synced description, in **characters**. Over it, the text is cut and ends in `...`. |
 | `prune` | `true` | Delete refs on the target that no longer exist here. |
 | `codeberg_url` | `https://codeberg.org` | Base URL of the Codeberg/Gitea instance. |
 | `target_owner` | `""` | Owner/namespace on Codeberg, GitLab and Gitee (empty = this repo's owner). |

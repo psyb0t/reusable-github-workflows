@@ -4,6 +4,22 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.24.0 — 2026-07-31
+
+- **Mirrored copies now announce themselves.** The synced description is
+  prefixed with `[mirror] ` (`description_prefix`, set it to an empty string to
+  disable) so someone landing on a copy can tell it from the original.
+- **The description is capped so a long one cannot fail the sync.** Over
+  `description_max_length` (default 2000) the text is cut and ends in `...`.
+  GitLab and Gitee both reject anything past 2000 — Gitee answers `422` with
+  `过长（最长为 2000 个字符）`, "too long (maximum 2000 characters)" — so an
+  untruncated description silently failed the whole metadata sync.
+- **The cap counts characters, not bytes.** Both platforms state their limit in
+  characters, so the truncation runs through `jq`, which counts codepoints.
+  Bash's `${#var}` counts bytes and would cut any description containing a
+  multi-byte character (an em dash, an accent, CJK) well short of the real
+  limit — or, worse, mid-sequence.
+
 ## v0.23.1 — 2026-07-31
 
 Documentation only, no behavior change.
