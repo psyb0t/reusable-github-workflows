@@ -1,0 +1,269 @@
+name: Archive
+
+# Pushes the caller repo into public archives so it survives the platform it
+# lives on. Two targets, two different failure modes:
+#
+#   Wayback Machine    archives the rendered PAGE (README as HTML, the project
+#                      homepage). Good for link rot; useless if you need the code.
+#   Software Heritage  archives the GIT OBJECT GRAPH -- every commit and blob,
+#                      git-native. This is the one that matters if the host
+#                      disappears entirely.
+#
+# Neither needs an API key. Both are anonymous-friendly and RATE-LIMITED rather
+# than gated, which drives two decisions here:
+#
+#   1. Every request retries with exponential backoff, because the expected
+#      failure is "too many requests right now", not "no".
+#   2. The whole thing is BEST EFFORT. An archive that is throttled must never
+#      fail the release that triggered it. Set fail_on_error to flip that.
+#
+# Wayback is genuinely slow -- a single save measured ~110s -- so it gets a
+# generous per-URL timeout and archives a short list, not every page. A timeout
+# is NOT treated as a refusal: Wayback frequently finishes the save after the
+# client has given up, so retrying on one is a best-effort second chance rather
+# than a correction.
+
+on:
+  workflow_call:
+    inputs:
+      wayback_enabled:
+        description: "Archive pages to the Internet Archive's Wayback Machine"
+        required: false
+        type: boolean
+        default: true
+
+      software_heritage_enabled:
+        description: "Archive the git history to Software Heritage"
+        required: false
+        type: boolean
+        default: true
+
+      include_homepage:
+        description: "Also archive the URL set as this repo's homepage, when it has one"
+        required: false
+        type: boolean
+        default: true
+
+      extra_urls:
+        description: "Additional URLs to archive, one per line"
+        required: false
+        type: string
+        default: ""
+
+      fail_on_error:
+        description: "Fail the job when an archive request is refused after every retry. Off by default: archiving is best effort and must not fail a release."
+        required: false
+        type: boolean
+        default: false
+
+      max_attempts:
+        description: "Attempts per request before giving up, including the first"
+        required: false
+        type: number
+        default: 3
+
+      backoff_seconds:
+        description: "Base delay between attempts. Doubles each retry, so 10 gives 10s then 20s."
+        required: false
+        type: number
+        default: 10
+
+      url_timeout_seconds:
+        description: "Per-URL budget for a Wayback save. It is slow; a single save has been measured at ~110s."
+        required: false
+        type: number
+        default: 180
+
+      runs_on:
+        description: "Runner to use"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+concurrency:
+  group: archive-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  wayback:
+    if: inputs.wayback_enabled
+    name: Wayback Machine
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Save pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.repository }}
+          INCLUDE_HOMEPAGE: ${{ inputs.include_homepage }}
+          EXTRA_URLS: ${{ inputs.extra_urls }}
+          FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF: ${{ inputs.backoff_seconds }}
+          URL_TIMEOUT: ${{ inputs.url_timeout_seconds }}
+        run: |
+          set -euo pipefail
+
+          # Returns 0 as soon as a save is confirmed. Retries only what is worth
+          # retrying: a 429, a 5xx, or a timeout. Any other 4xx is the archive
+          # telling us the URL itself is unacceptable, and waiting longer will
+          # not change that answer.
+          save_with_retry() {
+            local url="$1"
+            local attempt=1 delay status
+
+            while [ "${attempt}" -le "${MAX_ATTEMPTS}" ]; do
+              # -L because /save/ redirects to the snapshot it just created.
+              # The body is a full HTML page and carries nothing worth logging.
+              if status=$(curl -sL -o /dev/null -w '%{http_code}' \
+                --max-time "${URL_TIMEOUT}" \
+                "https://web.archive.org/save/${url}"); then
+
+                if [ "${status}" = "200" ]; then
+                  echo "archived on attempt ${attempt} (HTTP ${status})"
+
+                  return 0
+                fi
+
+                case "${status}" in
+                  429 | 5*)
+                    echo "attempt ${attempt}: HTTP ${status}, retryable"
+                    ;;
+                  *)
+                    echo "::warning::Wayback returned HTTP ${status} for ${url}; not retryable"
+
+                    return 1
+                    ;;
+                esac
+              else
+                echo "attempt ${attempt}: no answer within ${URL_TIMEOUT}s, retryable"
+              fi
+
+              if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
+                delay=$((BACKOFF * (2 ** (attempt - 1))))
+                echo "waiting ${delay}s before the next attempt"
+                sleep "${delay}"
+              fi
+
+              attempt=$((attempt + 1))
+            done
+
+            echo "::warning::Wayback did not confirm ${url} after ${MAX_ATTEMPTS} attempt(s); the save may still complete on their side"
+
+            return 1
+          }
+
+          urls=("https://github.com/${SOURCE}")
+
+          if [ "${INCLUDE_HOMEPAGE}" = "true" ]; then
+            homepage=$(gh api "repos/${SOURCE}" --jq '.homepage // ""')
+            if [ -n "${homepage}" ]; then
+              urls+=("${homepage}")
+            fi
+          fi
+
+          while IFS= read -r extra; do
+            [ -n "${extra}" ] || continue
+            urls+=("${extra}")
+          done <<< "${EXTRA_URLS}"
+
+          failed=0
+
+          for url in "${urls[@]}"; do
+            echo "::group::${url}"
+
+            if ! save_with_retry "${url}"; then
+              failed=$((failed + 1))
+            fi
+
+            echo "::endgroup::"
+          done
+
+          echo "requested ${#urls[@]} page(s), ${failed} did not confirm"
+
+          if [ "${FAIL_ON_ERROR}" = "true" ] && [ "${failed}" -gt 0 ]; then
+            echo "::error::${failed} page(s) were not archived and fail_on_error is true" >&2
+            exit 1
+          fi
+
+  software-heritage:
+    if: inputs.software_heritage_enabled
+    name: Software Heritage
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Save code now
+        env:
+          SOURCE: ${{ github.repository }}
+          FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF: ${{ inputs.backoff_seconds }}
+        run: |
+          set -euo pipefail
+
+          origin="https://github.com/${SOURCE}"
+          endpoint="https://archive.softwareheritage.org/api/1/origin/save/git/url/${origin}/"
+
+          attempt=1
+          accepted=false
+
+          while [ "${attempt}" -le "${MAX_ATTEMPTS}" ]; do
+            # Status and body together: curl exits 0 on a 4xx/5xx, so `set -e`
+            # would not catch a refusal and the step would go green having
+            # archived nothing. The status decides whether to retry; the body
+            # explains what happened.
+            response=$(curl -sS -w '\n%{http_code}' -X POST "${endpoint}" 2>&1 || true)
+            status=$(printf '%s' "${response}" | tail -n1)
+            body=$(printf '%s' "${response}" | sed '$d')
+
+            if [ "${status}" = "200" ]; then
+              request=$(printf '%s' "${body}" | jq -r '.save_request_status // "unknown"')
+              task=$(printf '%s' "${body}" | jq -r '.save_task_status // "unknown"')
+
+              echo "save_request_status=${request} save_task_status=${task}"
+
+              # The archive runs asynchronously, so "accepted" + "pending" is
+              # the normal success shape, not a partial result to poll for.
+              if [ "${request}" = "accepted" ]; then
+                accepted=true
+
+                break
+              fi
+
+              echo "::warning::Software Heritage did not accept the request (${request})"
+
+              break
+            fi
+
+            case "${status}" in
+              429 | 5*)
+                echo "attempt ${attempt}: HTTP ${status}, retryable"
+                ;;
+              *)
+                echo "::warning::Software Heritage returned HTTP ${status}: ${body}"
+
+                break
+                ;;
+            esac
+
+            if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
+              delay=$((BACKOFF * (2 ** (attempt - 1))))
+              echo "waiting ${delay}s before the next attempt"
+              sleep "${delay}"
+            fi
+
+            attempt=$((attempt + 1))
+          done
+
+          if [ "${accepted}" != "true" ]; then
+            echo "::warning::Software Heritage did not accept ${origin} after ${MAX_ATTEMPTS} attempt(s)"
+
+            if [ "${FAIL_ON_ERROR}" = "true" ]; then
+              echo "::error::Software Heritage save failed and fail_on_error is true" >&2
+              exit 1
+            fi
+          fi

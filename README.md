@@ -22,6 +22,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
   - [create-badges.yml](#create-badgesyml)
   - [git-mirror.yml](#git-mirroryml)
+  - [archive.yml](#archiveyml)
 - [License](#license)
 
 ## Shared conventions
@@ -46,6 +47,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
+| [`archive.yml`](#archiveyml) | Push the repo into the Wayback Machine (pages) and Software Heritage (git history). No API keys, best effort. |
 
 ## Pinning
 
@@ -631,6 +633,56 @@ jobs:
       codeberg_token: ${{ secrets.CODEBERG_TOKEN }}
       gitlab_token: ${{ secrets.GITLAB_TOKEN }}
       gitee_token: ${{ secrets.GITEE_TOKEN }}
+```
+
+## archive.yml
+
+Pushes the caller repo into public archives so it survives the platform it lives on. Two targets, covering two different failure modes:
+
+- **Wayback Machine** archives the rendered **page** — your README as HTML, and the project homepage. Good against link rot, useless if what you need back is the code.
+- **Software Heritage** archives the **git object graph** — every commit and every blob, git-native. This is the one that matters if a host disappears entirely. It's the archive academic citations point at, run by Inria under a UNESCO mandate.
+
+**Neither needs an API key**, and neither pulls in a third-party action — both are plain `curl`, so there's no marketplace action to SHA-pin and no supply-chain surface. Both services are anonymous-friendly and *rate-limited* rather than gated, which drives the two design decisions here:
+
+- **Every request retries with exponential backoff**, because the expected failure is "too many requests right now", not "no". `max_attempts` (default 3) with `backoff_seconds` (default 10) gives 10s then 20s between tries. Only a `429`, a `5xx`, or a timeout is retried — any other `4xx` means the URL itself is unacceptable and waiting won't change that answer, so it gives up immediately rather than burning the backoff.
+- **The whole thing is best effort.** A throttled archive must never fail the release that triggered it, so failures are warnings and the job still passes. Set `fail_on_error: true` to invert that.
+
+**Wayback is slow** — a single save measured **~110 seconds** — hence the generous `url_timeout_seconds` (default 180) and a deliberately short URL list rather than every page. A timeout is *not* treated as a refusal: Wayback frequently finishes the save after the client has given up, so a retry there is a second chance, not a correction.
+
+By default it archives the repo's GitHub page plus the URL set as the repo's homepage (`include_homepage`), and `extra_urls` takes any others, one per line.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `wayback_enabled` | `true` | Archive pages to the Wayback Machine. |
+| `software_heritage_enabled` | `true` | Archive the git history to Software Heritage. |
+| `include_homepage` | `true` | Also archive the repo's homepage URL, when it has one. |
+| `extra_urls` | `""` | Additional URLs to archive, one per line. |
+| `fail_on_error` | `false` | Fail the job when a request is refused after every retry. |
+| `max_attempts` | `3` | Attempts per request, including the first. |
+| `backoff_seconds` | `10` | Base delay between attempts; doubles each retry. |
+| `url_timeout_seconds` | `180` | Per-URL budget for a Wayback save. |
+| `runs_on` | `ubuntu-latest` | Runner to use. |
+
+### Secrets
+
+None.
+
+### Example
+
+```yaml
+name: archive
+on:
+  release:
+    types: [published]
+
+jobs:
+  archive:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/archive.yml@master
+    with:
+      extra_urls: |
+        https://example.com/docs/my-project
 ```
 
 ## License

@@ -4,6 +4,36 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.28.0 — 2026-07-31
+
+New `archive.yml`: push a repo into public archives so it outlives the platform
+it lives on.
+
+- **Two targets, two failure modes.** The Wayback Machine archives the rendered
+  page (README as HTML, the project homepage) — good against link rot, useless
+  if what you need back is the code. Software Heritage archives the git object
+  graph, every commit and blob, which is the one that matters if a host
+  disappears entirely.
+- **No API keys and no third-party actions.** Both are plain `curl`, so there is
+  no marketplace action to SHA-pin and no supply-chain surface. Both services are
+  anonymous-friendly and rate-limited rather than gated, which is what shapes the
+  rest of this design. Verified against the live APIs: Software Heritage returns
+  `save_request_status=accepted`, `save_task_status=pending` for an anonymous
+  POST, and an unauthenticated Wayback save returns HTTP 200.
+- **Exponential backoff on every request**, because the expected failure is
+  "too many requests right now", not "no". `max_attempts` (default 3) and
+  `backoff_seconds` (default 10) give 10s then 20s between tries. Only `429`,
+  `5xx` and timeouts are retried — any other `4xx` means the URL itself is
+  unacceptable, so it gives up at once instead of burning the backoff on an
+  answer that will not change.
+- **Best effort by default.** A throttled archive must never fail the release
+  that triggered it, so refusals are warnings and the job still passes.
+  `fail_on_error: true` inverts that.
+- **Wayback is slow — a single save measured ~110s**, hence
+  `url_timeout_seconds` defaulting to 180 and a deliberately short URL list. A
+  timeout is not treated as a refusal: Wayback often completes the save after the
+  client gives up, so the retry is a second chance rather than a correction.
+
 ## v0.27.1 — 2026-07-31
 
 This repo now mirrors itself, which it never did.
