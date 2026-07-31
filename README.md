@@ -45,7 +45,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
-| [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee / Bitbucket, creating the repo and syncing description + topics. |
+| [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
 
 ## Pinning
 
@@ -550,7 +550,7 @@ Then embed in the README (raw, GitHub-hosted, no external service):
 
 ## git-mirror.yml
 
-Push-mirrors the caller repo to Codeberg, GitLab, Gitee and/or Bitbucket the moment you push to GitHub, creating the destination repo if it doesn't exist yet and syncing the GitHub description (plus topics, where the platform has them). Every target is opt-in and runs as its own job with no `needs` between them, so enabling a second platform can't break the first, and a bad token on one doesn't hold up the others.
+Push-mirrors the caller repo to Codeberg, GitLab and/or Gitee the moment you push to GitHub, creating the destination repo if it doesn't exist yet and syncing the GitHub description (plus topics and the project URL, where the platform has them). Every target is opt-in and runs as its own job with no `needs` between them, so enabling a second platform can't break the first, and a bad token on one doesn't hold up the others.
 
 The mirror is one-way and authoritative. `--force` means anything pushed directly to a target that GitHub doesn't have is overwritten, and `prune: true` (the default) deletes refs there that no longer exist here — so the copies stay byte-identical to GitHub. Set `prune: false` if you'd rather stale branches linger than vanish. These are read-only mirrors; don't accept contributions on them.
 
@@ -570,7 +570,6 @@ Platform differences that aren't obvious:
 | Codeberg (Gitea) | yes | yes | yes (`website`) | Gitea rejects the whole topics array if one entry is invalid, so topics are lowercased, stripped to `[a-z0-9-]`, de-duped and capped at 25. |
 | GitLab | yes | yes | **no** | Project creation needs a token with `api` scope, not just `write_repository`. Its project object exposes only derived URLs (`web_url`, `readme_url`, …), none writable, so the homepage has nowhere to go. |
 | Gitee | yes | **no** | yes (`homepage`) | `name` is **required** on the repo-edit call — a body without it is rejected — so it's sent unchanged. See the visibility note below. |
-| Bitbucket | yes | **no** | yes (`website`) | Namespaces repos under a workspace, so `bitbucket_workspace` is required. |
 
 **Gitee visibility.** Gitee requires a mobile number bound to the account before any repository can be public. Rather than refusing a `private: false` create, it accepts the call and creates a **private** repo — so the mirror runs green while the result is invisible to everyone else. The Gitee job re-reads visibility after creating and warns when this happens. Flipping such a repo afterwards returns `422` with `仓库转公开需绑定手机号码` ("making a repository public requires binding a phone number"); that's an account setting, not something the workflow can fix.
 
@@ -581,7 +580,6 @@ Platform differences that aren't obvious:
 | `codeberg_enabled` | `false` | Mirror to Codeberg. |
 | `gitlab_enabled` | `false` | Mirror to GitLab. |
 | `gitee_enabled` | `false` | Mirror to Gitee. |
-| `bitbucket_enabled` | `false` | Mirror to Bitbucket. |
 | `create_missing` | `true` | Create the repo on the target when it doesn't exist yet. |
 | `sync_metadata` | `true` | Sync the GitHub description (and topics / project URL, where supported). |
 | `description_prefix` | `[mirror] ` | Prepended to the synced description so a visitor can tell a copy from the original. Empty string disables it. |
@@ -599,9 +597,6 @@ Platform differences that aren't obvious:
 | `gitlab_token` | GitLab | PAT with `api` scope. |
 | `gitee_token` | Gitee | Private access token with projects scope. |
 | `gitee_user` | Gitee | Username for the push (optional — defaults to the target owner). |
-| `bitbucket_user` | Bitbucket | Username. |
-| `bitbucket_token` | Bitbucket | App password with Repositories: Admin + Write. |
-| `bitbucket_workspace` | Bitbucket | Workspace the repo lives under. |
 
 A target that's enabled with an empty secret fails immediately with a message naming the exact secret to set, rather than failing deep inside a push.
 

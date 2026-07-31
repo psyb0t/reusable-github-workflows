@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.25.0 — 2026-07-31
+
+- **Breaking.** Dropped Bitbucket support from `git-mirror.yml`. The
+  `bitbucket_enabled` input and the `bitbucket_user` / `bitbucket_token` /
+  `bitbucket_workspace` secrets are gone, along with the job. A caller passing
+  any of them now fails on an unknown input, so remove them from the `with:` and
+  `secrets:` blocks. Callers that never enabled it are unaffected — nothing in
+  this org did, so nothing breaks in practice.
+- Mirroring targets Codeberg, GitLab and Gitee. It was the only target whose
+  API shape was never verified against a live instance, and the only one whose
+  account could not be logged into to get a token, so it shipped as untested
+  code that would have gone stale unnoticed.
+
 ## v0.24.0 — 2026-07-31
 
 - **Mirrored copies now announce themselves.** The synced description is

@@ -1,7 +1,7 @@
 name: Git Mirror
 
-# Push-mirrors this repository to Codeberg, GitLab, Gitee and/or Bitbucket, and
-# syncs the GitHub description + topics to each one that supports them.
+# Push-mirrors this repository to Codeberg, GitLab and/or Gitee, and syncs the
+# GitHub description + topics to each one that supports them.
 #
 # What syncs where is NOT uniform, because the platforms genuinely differ:
 #
@@ -9,7 +9,6 @@ name: Git Mirror
 #   Codeberg   yes           yes      yes (`website`)
 #   GitLab     yes           yes      NO -- no such field on a project
 #   Gitee      yes           NO       yes (`homepage`)
-#   Bitbucket  yes           NO       yes (`website`)
 #
 # GitLab's project object exposes only derived URLs (`web_url`, `readme_url`,
 # ...), none of them writable, so the GitHub homepage has nowhere to go there.
@@ -35,7 +34,6 @@ name: Git Mirror
 #         codeberg_enabled: true
 #         gitlab_enabled: true
 #         gitee_enabled: true
-#         bitbucket_enabled: false
 #       secrets:
 #         codeberg_token: ${{ secrets.CODEBERG_TOKEN }}
 #         gitlab_token: ${{ secrets.GITLAB_TOKEN }}
@@ -56,9 +54,8 @@ name: Git Mirror
 #      404 / 500, so `set -euo pipefail` does NOT catch a revoked token or a
 #      missing scope -- the step goes green having synced nothing.
 #
-# Tokens need repo-create + repo-write scope on each platform. Bitbucket also
-# needs a workspace (it namespaces repos under one) and has NO topics concept at
-# all, so only the description syncs there.
+# Tokens need repo-create + repo-write scope on each platform. GitLab's project
+# creation specifically needs `api` scope, not just `write_repository`.
 
 on:
   workflow_call:
@@ -71,12 +68,6 @@ on:
 
       gitlab_enabled:
         description: "Mirror to GitLab"
-        required: false
-        type: boolean
-        default: false
-
-      bitbucket_enabled:
-        description: "Mirror to Bitbucket"
         required: false
         type: boolean
         default: false
@@ -141,15 +132,6 @@ on:
         required: false
       gitlab_token:
         description: "GitLab PAT with api scope (project creation needs api, not just write_repository)"
-        required: false
-      bitbucket_user:
-        description: "Bitbucket username"
-        required: false
-      bitbucket_token:
-        description: "Bitbucket app password with Repositories: Admin + Write"
-        required: false
-      bitbucket_workspace:
-        description: "Bitbucket workspace the repo lives under"
         required: false
       gitee_token:
         description: "Gitee private access token with projects scope"
@@ -506,107 +488,3 @@ jobs:
             "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
 
           echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to Gitee"
-
-  bitbucket:
-    if: inputs.bitbucket_enabled
-    name: Bitbucket
-    runs-on: ${{ inputs.runs_on }}
-    permissions:
-      contents: read
-    steps:
-      - name: Mirror
-        env:
-          GH_TOKEN: ${{ github.token }}
-          USERNAME: ${{ secrets.bitbucket_user }}
-          TOKEN: ${{ secrets.bitbucket_token }}
-          WORKSPACE: ${{ secrets.bitbucket_workspace }}
-          REPO: ${{ github.event.repository.name }}
-          SOURCE: ${{ github.repository }}
-          CREATE_MISSING: ${{ inputs.create_missing }}
-          SYNC_METADATA: ${{ inputs.sync_metadata }}
-          PREFIX: ${{ inputs.description_prefix }}
-          MAXLEN: ${{ inputs.description_max_length }}
-          PRUNE: ${{ inputs.prune }}
-        run: |
-          set -euo pipefail
-
-          # Named explicitly rather than derived from the variable name: the
-          # secret is bitbucket_user, not bitbucket_username, and an error
-          # message naming an input that does not exist is worse than none.
-          missing=()
-          [ -n "${USERNAME}" ] || missing+=("bitbucket_user")
-          [ -n "${TOKEN}" ] || missing+=("bitbucket_token")
-          [ -n "${WORKSPACE}" ] || missing+=("bitbucket_workspace")
-
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::bitbucket_enabled is true but these secrets are empty: ${missing[*]}" >&2
-            exit 1
-          fi
-
-          api="https://api.bitbucket.org/2.0/repositories/${WORKSPACE}/${REPO}"
-          auth=(-u "${USERNAME}:${TOKEN}")
-
-          status=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" "${api}")
-
-          if [ "${status}" = "404" ]; then
-            if [ "${CREATE_MISSING}" != "true" ]; then
-              echo "::error::${WORKSPACE}/${REPO} does not exist on Bitbucket and create_missing is false" >&2
-              exit 1
-            fi
-
-            echo "creating ${WORKSPACE}/${REPO} on Bitbucket"
-            if ! created=$(curl -sS --fail-with-body -X POST "${auth[@]}" \
-              -H "Content-Type: application/json" \
-              -d '{"scm": "git", "is_private": false}' \
-              "${api}" 2>&1); then
-
-              # Concurrency should keep runs from racing here, but a caller can
-              # still start two by other means. If the repo exists now, someone
-              # else created it and this run can carry on.
-              recheck=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" "${api}")
-
-              if [ "${recheck}" = "200" ]; then
-                echo "already created by a concurrent run; continuing"
-              else
-                echo "::error::Bitbucket create failed: ${created}" >&2
-                exit 1
-              fi
-            fi
-          elif [ "${status}" != "200" ]; then
-            echo "::error::Bitbucket lookup returned HTTP ${status}" >&2
-            exit 1
-          fi
-
-          if [ "${SYNC_METADATA}" = "true" ]; then
-            # Bitbucket has no topics/tags concept, so this syncs the
-            # description and the project URL (which it calls `website`).
-            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
-
-            # Mark the copy, then cap it. jq counts codepoints, so the cap is in
-            # characters -- bash ${#var} would be bytes and would cut short.
-            description=$(printf '%s' "${meta}" | jq -r --arg p "${PREFIX}" --argjson max "${MAXLEN}" '
-              (if .description == "" then ($p | sub(" +$"; "")) else ($p + .description) end)
-              | if length > $max then .[0:($max - 3)] + "..." else . end
-            ')
-
-            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
-              -H "Content-Type: application/json" \
-              -d "$(printf '%s' "${meta}" | jq -c --arg d "${description}" '{description: $d, website: .homepage}')" \
-              "${api}" 2>&1); then
-              echo "::error::Bitbucket description/website sync failed: ${out}" >&2
-              exit 1
-            fi
-          fi
-
-          git clone --bare --quiet \
-            "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
-          cd src.git
-
-          prune_flag=()
-          if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
-
-          git push --force "${prune_flag[@]}" \
-            "https://${USERNAME}:${TOKEN}@bitbucket.org/${WORKSPACE}/${REPO}.git" \
-            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
-
-          echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to Bitbucket"
