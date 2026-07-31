@@ -651,6 +651,12 @@ Pushes the caller repo into public archives so it survives the platform it lives
 
 By default it archives the repo's GitHub page plus the URL set as the repo's homepage (`include_homepage`), and `extra_urls` takes any others, one per line.
 
+**Archiving the pages your README links to needs archive.org keys**, and the keyless path fails at it in the worst way: `capture_outlinks` is *silently ignored* rather than refused. The save returns HTTP 200, the page itself lands in the archive, and not one linked page does.
+
+The reason is that outlink capture only exists on the authenticated Save Page Now v2 API — an unauthenticated `POST https://web.archive.org/save` answers `You need to be logged in to use Save Page Now` even for a plain save with no options at all. The keyless `GET /save/<url>` this workflow falls back to is an older path that takes no options.
+
+Generate an S3-style key pair at [archive.org/account/s3.php](https://archive.org/account/s3.php) and pass them as `wayback_access_key` / `wayback_secret_key`. With them the job switches to the v2 API and `capture_outlinks` (default `true`) and `capture_screenshot` (default `false`) start working. Without them everything still runs and the job emits a warning, so the gap is visible instead of silent.
+
 ### Inputs
 
 | Input | Default | Description |
@@ -659,6 +665,8 @@ By default it archives the repo's GitHub page plus the URL set as the repo's hom
 | `software_heritage_enabled` | `true` | Archive the git history to Software Heritage. |
 | `include_homepage` | `true` | Also archive the repo's homepage URL, when it has one. |
 | `extra_urls` | `""` | Additional URLs to archive, one per line. |
+| `capture_outlinks` | `true` | Also archive every page the archived page links to. **Requires the archive.org key secrets** — silently ignored without them. |
+| `capture_screenshot` | `false` | Also store a screenshot of each page. Same key requirement. |
 | `fail_on_error` | `false` | Fail the job when a request is refused after every retry. |
 | `max_attempts` | `3` | Attempts per request, including the first. |
 | `backoff_seconds` | `10` | Base delay between attempts; doubles each retry. |
@@ -667,9 +675,16 @@ By default it archives the repo's GitHub page plus the URL set as the repo's hom
 
 ### Secrets
 
-None.
+Both optional. Without them the job still runs, using the keyless save.
+
+| Secret | Description |
+|---|---|
+| `wayback_access_key` | archive.org S3-style access key, from [archive.org/account/s3.php](https://archive.org/account/s3.php). Needed for `capture_outlinks` / `capture_screenshot`. |
+| `wayback_secret_key` | The paired secret key. |
 
 ### Example
+
+Keyless — archives the repo page and its homepage, no setup at all:
 
 ```yaml
 name: archive
@@ -683,6 +698,17 @@ jobs:
     with:
       extra_urls: |
         https://example.com/docs/my-project
+```
+
+With keys — additionally sweeps in every page the archived pages link to:
+
+```yaml
+jobs:
+  archive:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/archive.yml@master
+    secrets:
+      wayback_access_key: ${{ secrets.WAYBACK_ACCESS_KEY }}
+      wayback_secret_key: ${{ secrets.WAYBACK_SECRET_KEY }}
 ```
 
 ## License

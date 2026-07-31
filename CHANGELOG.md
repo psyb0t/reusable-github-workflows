@@ -4,6 +4,31 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.29.0 — 2026-07-31
+
+`archive.yml` can now capture outlinks — the pages your README links to — which
+turns out to need an archive.org account.
+
+- **New optional `wayback_access_key` / `wayback_secret_key` secrets.** With
+  them the Wayback job switches to the authenticated Save Page Now v2 API and
+  the new `capture_outlinks` (default `true`) and `capture_screenshot` (default
+  `false`) inputs take effect. Without them nothing breaks: it keeps using the
+  keyless save exactly as before.
+- **Why the keys are unavoidable, and why this is worth stating loudly:** the
+  keyless path does not refuse `capture_outlinks`, it **silently ignores** it.
+  Tested against the live service — a save with the flag returned HTTP 200, the
+  page itself was archived, and a CDX query confirmed that not one linked page
+  was. Outlink capture exists only on the v2 API, and an unauthenticated
+  `POST /save` answers `You need to be logged in to use Save Page Now` even for
+  a plain save with no options. The keyless `GET /save/<url>` is an older path
+  that accepts no options at all.
+- **The job warns when `capture_outlinks` is on but no keys are set**, so the
+  gap is visible in the log rather than being a feature everyone assumes works.
+- Bad keys are handled as a permanent failure: a `401` is classified
+  not-retryable, so it fails fast instead of spending the backoff on an answer
+  that will not change, and the step still exits 0 because archiving is best
+  effort.
+
 ## v0.28.0 — 2026-07-31
 
 New `archive.yml`: push a repo into public archives so it outlives the platform

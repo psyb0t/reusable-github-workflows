@@ -50,6 +50,18 @@ on:
         type: string
         default: ""
 
+      capture_outlinks:
+        description: "Also archive every page the archived page links to. REQUIRES the wayback_access_key / wayback_secret_key secrets: outlink capture lives behind the authenticated Save Page Now API, and the keyless path silently ignores the flag rather than refusing it."
+        required: false
+        type: boolean
+        default: true
+
+      capture_screenshot:
+        description: "Also store a screenshot of each archived page. Same auth requirement as capture_outlinks."
+        required: false
+        type: boolean
+        default: false
+
       fail_on_error:
         description: "Fail the job when an archive request is refused after every retry. Off by default: archiving is best effort and must not fail a release."
         required: false
@@ -80,6 +92,15 @@ on:
         type: string
         default: "ubuntu-latest"
 
+    secrets:
+      wayback_access_key:
+        description: "archive.org S3-style access key. Optional: without it the job uses the keyless save, which works but cannot capture outlinks or screenshots. Generate the pair at https://archive.org/account/s3.php"
+        required: false
+
+      wayback_secret_key:
+        description: "archive.org S3-style secret key, paired with wayback_access_key"
+        required: false
+
 concurrency:
   group: archive-${{ github.repository }}
   cancel-in-progress: false
@@ -100,12 +121,34 @@ jobs:
           SOURCE: ${{ github.repository }}
           INCLUDE_HOMEPAGE: ${{ inputs.include_homepage }}
           EXTRA_URLS: ${{ inputs.extra_urls }}
+          CAPTURE_OUTLINKS: ${{ inputs.capture_outlinks }}
+          CAPTURE_SCREENSHOT: ${{ inputs.capture_screenshot }}
           FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
           MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           BACKOFF: ${{ inputs.backoff_seconds }}
           URL_TIMEOUT: ${{ inputs.url_timeout_seconds }}
+          ACCESS_KEY: ${{ secrets.wayback_access_key }}
+          SECRET_KEY: ${{ secrets.wayback_secret_key }}
         run: |
           set -euo pipefail
+
+          # Two ways in, and the difference is not cosmetic:
+          #
+          #   keyless   GET /save/<url>. Works with no account. Cannot capture
+          #             outlinks or screenshots -- it does not refuse those
+          #             options, it silently ignores them, which is worse.
+          #   keyed     POST /save with an S3-style Authorization header. This is
+          #             the Save Page Now v2 API and the ONLY way to get
+          #             outlinks. Without the header it answers "You need to be
+          #             logged in to use Save Page Now" even for a plain save.
+          authed=false
+          if [ -n "${ACCESS_KEY}" ] && [ -n "${SECRET_KEY}" ]; then
+            authed=true
+          fi
+
+          if [ "${CAPTURE_OUTLINKS}" = "true" ] && [ "${authed}" != "true" ]; then
+            echo "::warning::capture_outlinks is on but no archive.org keys were provided; outlinks will NOT be captured. Set wayback_access_key and wayback_secret_key, or turn the input off to silence this."
+          fi
 
           # Returns 0 as soon as a save is confirmed. Retries only what is worth
           # retrying: a 429, a 5xx, or a timeout. Any other 4xx is the archive
@@ -113,34 +156,80 @@ jobs:
           # not change that answer.
           save_with_retry() {
             local url="$1"
-            local attempt=1 delay status
+            local attempt=1 delay status body
 
             while [ "${attempt}" -le "${MAX_ATTEMPTS}" ]; do
-              # -L because /save/ redirects to the snapshot it just created.
-              # The body is a full HTML page and carries nothing worth logging.
-              if status=$(curl -sL -o /dev/null -w '%{http_code}' \
-                --max-time "${URL_TIMEOUT}" \
-                "https://web.archive.org/save/${url}"); then
-
-                if [ "${status}" = "200" ]; then
-                  echo "archived on attempt ${attempt} (HTTP ${status})"
-
-                  return 0
+              if [ "${authed}" = "true" ]; then
+                local form=(--data-urlencode "url=${url}")
+                if [ "${CAPTURE_OUTLINKS}" = "true" ]; then
+                  form+=(--data-urlencode "capture_outlinks=1")
+                fi
+                if [ "${CAPTURE_SCREENSHOT}" = "true" ]; then
+                  form+=(--data-urlencode "capture_screenshot=1")
                 fi
 
-                case "${status}" in
-                  429 | 5*)
-                    echo "attempt ${attempt}: HTTP ${status}, retryable"
-                    ;;
-                  *)
-                    echo "::warning::Wayback returned HTTP ${status} for ${url}; not retryable"
+                # The response is JSON carrying a job_id. The capture itself is
+                # asynchronous, so a job_id IS the success signal here; polling
+                # it would only make a best-effort step slower.
+                if body=$(curl -sS -w '\n%{http_code}' -X POST \
+                  --max-time "${URL_TIMEOUT}" \
+                  -H "Accept: application/json" \
+                  -H "Authorization: LOW ${ACCESS_KEY}:${SECRET_KEY}" \
+                  "${form[@]}" \
+                  "https://web.archive.org/save" 2>&1); then
+
+                  status=$(printf '%s' "${body}" | tail -n1)
+                  body=$(printf '%s' "${body}" | sed '$d')
+
+                  if [ "${status}" = "200" ]; then
+                    local job
+                    job=$(printf '%s' "${body}" | jq -r '.job_id // empty' 2>/dev/null || true)
+
+                    if [ -n "${job}" ]; then
+                      echo "queued on attempt ${attempt} (job ${job})"
+
+                      return 0
+                    fi
+
+                    # 200 with no job_id means it answered with a message
+                    # instead -- a refusal in disguise.
+                    echo "::warning::Wayback accepted the request but returned no job: ${body}"
 
                     return 1
-                    ;;
-                esac
+                  fi
+                else
+                  status="000"
+                fi
               else
-                echo "attempt ${attempt}: no answer within ${URL_TIMEOUT}s, retryable"
+                # -L because /save/ redirects to the snapshot it just created.
+                # The body is a full HTML page and carries nothing worth logging.
+                if status=$(curl -sL -o /dev/null -w '%{http_code}' \
+                  --max-time "${URL_TIMEOUT}" \
+                  "https://web.archive.org/save/${url}"); then
+
+                  if [ "${status}" = "200" ]; then
+                    echo "archived on attempt ${attempt} (HTTP ${status})"
+
+                    return 0
+                  fi
+                else
+                  status="000"
+                fi
               fi
+
+              case "${status}" in
+                000)
+                  echo "attempt ${attempt}: no answer within ${URL_TIMEOUT}s, retryable"
+                  ;;
+                429 | 5*)
+                  echo "attempt ${attempt}: HTTP ${status}, retryable"
+                  ;;
+                *)
+                  echo "::warning::Wayback returned HTTP ${status} for ${url}; not retryable"
+
+                  return 1
+                  ;;
+              esac
 
               if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
                 delay=$((BACKOFF * (2 ** (attempt - 1))))
