@@ -34,6 +34,8 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 - **Concurrency matches the resource** — a newer push on the same ref supersedes ordinary in-flight work (tag pushes always complete); badge publishing serializes writers for each caller repository and output branch; mirroring serializes per caller repository without cancelling, since each run carries a real ref that still has to reach the targets.
 - **Triggered from `push`** — you wire `on: [push]`; the workflow itself decides what to act on (branch vs. tag) and no-ops on refs it doesn't handle.
 - **Supply-chain discipline on any tooling install** — exact version pins, an age-gate that refuses freshly-published releases, and `npm install --ignore-scripts`.
+- **Network operations retry with exponential backoff** — clones, pushes, package installs, release downloads. A registry 502 or a reset connection shouldn't cost you a whole run. What retrying is *not* for: turning a real failure green. Every retried operation still fails the job if it never succeeds, and the scanners (`govulncheck`, `pip-audit`) are deliberately excluded — they exit non-zero when they *find* something, so retrying them would re-run a genuine finding and just report it slower.
+- **Fail honestly, but don't block what shouldn't be blocked** — a job that couldn't do its work goes red rather than reporting a green run that did nothing. The way to avoid a red run blocking unrelated work is to keep the job independent (nothing `needs:` it), not to swallow the failure.
 
 ## Workflows
 
@@ -598,6 +600,8 @@ The job therefore strips **every** protected-branch rule from the target after e
 | `description_prefix` | `[mirror] ` | Prepended to the synced description so a visitor can tell a copy from the original. Empty string disables it. |
 | `description_max_length` | `2000` | Cap on the synced description, in **characters**. Over it, the text is cut and ends in `...`. |
 | `prune` | `true` | Delete refs on the target that no longer exist here. |
+| `max_attempts` | `3` | Attempts per network operation (the bare clone and the force push), including the first. |
+| `backoff_seconds` | `10` | Base delay between attempts; doubles each retry. |
 | `readme_url_header` | `true` | On targets with no project-URL field (GitLab only), prepend this repo's homepage as a link at the top of the README on the mirror's default branch. Costs one extra commit on that branch. No effect without a homepage or a README. |
 | `codeberg_url` | `https://codeberg.org` | Base URL of the Codeberg/Gitea instance. |
 | `target_owner` | `""` | Owner/namespace on Codeberg, GitLab and Gitee (empty = this repo's owner). |
@@ -649,7 +653,7 @@ Pushes the caller repo into public archives so it survives the platform it lives
 **Neither needs an API key**, and neither pulls in a third-party action — both are plain `curl`, so there's no marketplace action to SHA-pin and no supply-chain surface. Both services are anonymous-friendly and *rate-limited* rather than gated, which drives the two design decisions here:
 
 - **Every request retries with exponential backoff**, because the expected failure is "too many requests right now", not "no". `max_attempts` (default 3) with `backoff_seconds` (default 10) gives 10s then 20s between tries. Only a `429`, a `5xx`, or a timeout is retried — any other `4xx` means the URL itself is unacceptable and waiting won't change that answer, so it gives up immediately rather than burning the backoff.
-- **The whole thing is best effort.** A throttled archive must never fail the release that triggered it, so failures are warnings and the job still passes. Set `fail_on_error: true` to invert that.
+- **If it still can't archive after all that, the job goes red.** A green run that archived nothing is a lie. Going red costs nothing here because the job is deliberately independent — nothing `needs:` it, so it reports the truth without blocking the release or any other job. Set `fail_on_error: false` if you'd rather not see it.
 
 **Wayback is slow** — a single save measured **~110 seconds** — hence the generous `url_timeout_seconds` (default 180) and a deliberately short URL list rather than every page. A timeout is *not* treated as a refusal: Wayback frequently finishes the save after the client has given up, so a retry there is a second chance, not a correction.
 
@@ -671,7 +675,7 @@ Generate an S3-style key pair at [archive.org/account/s3.php](https://archive.or
 | `extra_urls` | `""` | Additional URLs to archive, one per line. |
 | `capture_outlinks` | `true` | Also archive every page the archived page links to. **Requires the archive.org key secrets** — silently ignored without them. |
 | `capture_screenshot` | `false` | Also store a screenshot of each page. Same key requirement. |
-| `fail_on_error` | `false` | Fail the job when a request is refused after every retry. |
+| `fail_on_error` | `true` | Fail the job when a request is still refused after every retry — a green run that archived nothing is a lie. Nothing `needs:` this job, so red here blocks nothing. |
 | `max_attempts` | `3` | Attempts per request, including the first. |
 | `backoff_seconds` | `10` | Base delay between attempts; doubles each retry. |
 | `url_timeout_seconds` | `180` | Per-URL budget for a Wayback save. |

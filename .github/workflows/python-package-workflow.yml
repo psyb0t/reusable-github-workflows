@@ -109,8 +109,34 @@ jobs:
         env:
           CHECK: ${{ matrix.check }}
         run: |
-          python -m pip install --upgrade pip
-          pip install -- "$CHECK"
+          set -euo pipefail
+
+          # PyPI reaches through a CDN that returns the occasional 5xx or resets
+          # mid-download. Losing a whole lint-matrix leg to that is pure waste,
+          # so the network steps retry with exponential backoff.
+          retry() {
+            local attempt=1 delay
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge 3 ]; then
+                echo "::error::gave up after 3 attempt(s): $*" >&2
+
+                return 1
+              fi
+
+              delay=$((10 * (2 ** (attempt - 1))))
+              echo "attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          retry python -m pip install --upgrade pip
+          retry pip install -- "$CHECK"
           ${{ inputs.install_dependencies_command }}
       - name: Run ${{ matrix.check }}
         env:
@@ -186,7 +212,34 @@ jobs:
         run: ${{ inputs.install_dependencies_command }}
       - name: Audit dependencies with pip-audit
         run: |
-          pip install pip-audit==2.8.0
+          set -euo pipefail
+
+          retry() {
+            local attempt=1 delay
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge 3 ]; then
+                echo "::error::gave up after 3 attempt(s): $*" >&2
+
+                return 1
+              fi
+
+              delay=$((10 * (2 ** (attempt - 1))))
+              echo "attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          # Only the install retries. pip-audit itself exits non-zero when it
+          # FINDS something, so retrying it would re-run a real finding three
+          # times and report the same failure slower.
+          retry pip install pip-audit==2.8.0
+
           pip-audit --strict --progress-spinner=off
 
   pypi-publish:

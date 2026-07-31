@@ -10,12 +10,16 @@ name: Archive
 #                      disappears entirely.
 #
 # Neither needs an API key. Both are anonymous-friendly and RATE-LIMITED rather
-# than gated, which drives two decisions here:
+# than gated, which drives the retry policy: every request retries with
+# exponential backoff, because the expected failure is "too many requests right
+# now", not "no".
 #
-#   1. Every request retries with exponential backoff, because the expected
-#      failure is "too many requests right now", not "no".
-#   2. The whole thing is BEST EFFORT. An archive that is throttled must never
-#      fail the release that triggered it. Set fail_on_error to flip that.
+# If it STILL cannot archive after all of that, the job goes red. A green run
+# that archived nothing is a lie, and the point of this job is knowing the
+# archive exists. Going red costs nothing here because the job is deliberately
+# independent -- nothing `needs:` it, so it reports the truth without blocking
+# the release or any other job. That is the split worth keeping: fail honestly,
+# but never fail something that had no business being blocked.
 #
 # Wayback is genuinely slow -- a single save measured ~110s -- so it gets a
 # generous per-URL timeout and archives a short list, not every page. A timeout
@@ -63,10 +67,10 @@ on:
         default: false
 
       fail_on_error:
-        description: "Fail the job when an archive request is refused after every retry. Off by default: archiving is best effort and must not fail a release."
+        description: "Fail the job when an archive request is still refused after every retry. On by default: a green run that archived nothing is a lie, and this job is deliberately independent — nothing `needs:` it, so going red reports the truth without blocking a release or any other job. Set false only if you would rather not see it."
         required: false
         type: boolean
-        default: false
+        default: true
 
       max_attempts:
         description: "Attempts per request before giving up, including the first"

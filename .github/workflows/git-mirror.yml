@@ -108,6 +108,18 @@ on:
         type: boolean
         default: true
 
+      max_attempts:
+        description: "Attempts for each network operation before giving up, including the first. The clone and the push are pure network and fail transiently — a registry blip should cost a retry, not the whole mirror for that run."
+        required: false
+        type: number
+        default: 3
+
+      backoff_seconds:
+        description: "Base delay between attempts. Doubles each retry, so 10 gives 10s then 20s."
+        required: false
+        type: number
+        default: 10
+
       readme_url_header:
         description: "On targets with no project-URL field (GitLab only), prepend this repo's homepage as a link at the top of the README on the mirror's default branch. Costs the mirror one extra commit on that branch; every other branch, tag and file stays byte-identical. No effect when the repo has no homepage set or no README."
         required: false
@@ -178,8 +190,38 @@ jobs:
           PREFIX: ${{ inputs.description_prefix }}
           MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF: ${{ inputs.backoff_seconds }}
         run: |
           set -euo pipefail
+
+          # The clone and the push are pure network and fail transiently:
+          # registry 502s, TLS resets, a brief upstream outage. Losing one costs
+          # the entire mirror for that run, so they get retried with exponential
+          # backoff. A genuinely bad token also retries -- it fails the same way
+          # from here -- which just means a real auth failure takes
+          # max_attempts tries instead of one. That is cheap next to dropping a
+          # mirror on a blip.
+          retry() {
+            local attempt=1 delay
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+                echo "::error::gave up after ${MAX_ATTEMPTS} attempt(s): $*" >&2
+
+                return 1
+              fi
+
+              delay=$((BACKOFF * (2 ** (attempt - 1))))
+              echo "attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
 
           if [ -z "${TOKEN}" ]; then
             echo "::error::codeberg_enabled is true but the codeberg_token secret is empty" >&2
@@ -272,14 +314,14 @@ jobs:
           fi
 
           host="${BASE#https://}"
-          git clone --bare --quiet \
+          retry git clone --bare --quiet \
             "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
           cd src.git
 
           prune_flag=()
           if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
 
-          git push --force "${prune_flag[@]}" \
+          retry git push --force "${prune_flag[@]}" \
             "https://${TOKEN}@${host}/${OWNER}/${REPO}.git" \
             "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
 
@@ -304,9 +346,39 @@ jobs:
           PREFIX: ${{ inputs.description_prefix }}
           MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF: ${{ inputs.backoff_seconds }}
           README_URL_HEADER: ${{ inputs.readme_url_header }}
         run: |
           set -euo pipefail
+
+          # The clone and the push are pure network and fail transiently:
+          # registry 502s, TLS resets, a brief upstream outage. Losing one costs
+          # the entire mirror for that run, so they get retried with exponential
+          # backoff. A genuinely bad token also retries -- it fails the same way
+          # from here -- which just means a real auth failure takes
+          # max_attempts tries instead of one. That is cheap next to dropping a
+          # mirror on a blip.
+          retry() {
+            local attempt=1 delay
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+                echo "::error::gave up after ${MAX_ATTEMPTS} attempt(s): $*" >&2
+
+                return 1
+              fi
+
+              delay=$((BACKOFF * (2 ** (attempt - 1))))
+              echo "attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
 
           if [ -z "${TOKEN}" ]; then
             echo "::error::gitlab_enabled is true but the gitlab_token secret is empty" >&2
@@ -448,7 +520,7 @@ jobs:
             fi
           fi
 
-          git clone --bare --quiet \
+          retry git clone --bare --quiet \
             "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
           cd src.git
 
@@ -511,7 +583,7 @@ jobs:
           prune_flag=()
           if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
 
-          git push --force "${prune_flag[@]}" \
+          retry git push --force "${prune_flag[@]}" \
             "https://oauth2:${TOKEN}@gitlab.com/${OWNER}/${REPO}.git" \
             "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
 
@@ -537,8 +609,38 @@ jobs:
           PREFIX: ${{ inputs.description_prefix }}
           MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF: ${{ inputs.backoff_seconds }}
         run: |
           set -euo pipefail
+
+          # The clone and the push are pure network and fail transiently:
+          # registry 502s, TLS resets, a brief upstream outage. Losing one costs
+          # the entire mirror for that run, so they get retried with exponential
+          # backoff. A genuinely bad token also retries -- it fails the same way
+          # from here -- which just means a real auth failure takes
+          # max_attempts tries instead of one. That is cheap next to dropping a
+          # mirror on a blip.
+          retry() {
+            local attempt=1 delay
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+                echo "::error::gave up after ${MAX_ATTEMPTS} attempt(s): $*" >&2
+
+                return 1
+              fi
+
+              delay=$((BACKOFF * (2 ** (attempt - 1))))
+              echo "attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
 
           if [ -z "${TOKEN}" ]; then
             echo "::error::gitee_enabled is true but the gitee_token secret is empty" >&2
@@ -621,14 +723,14 @@ jobs:
             fi
           fi
 
-          git clone --bare --quiet \
+          retry git clone --bare --quiet \
             "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
           cd src.git
 
           prune_flag=()
           if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
 
-          git push --force "${prune_flag[@]}" \
+          retry git push --force "${prune_flag[@]}" \
             "https://${user}:${TOKEN}@gitee.com/${OWNER}/${REPO}.git" \
             "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
 

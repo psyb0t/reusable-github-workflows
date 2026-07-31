@@ -4,6 +4,37 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.32.0 — 2026-07-31
+
+Backoff retries on the network operations across every workflow, and a
+correction to how `archive.yml` reports failure.
+
+- **`git-mirror.yml`** had 28 network operations and no retry at all — the most
+  exposed workflow in the set. The bare clone and the force push now retry with
+  exponential backoff on all three targets, via new `max_attempts` (default 3)
+  and `backoff_seconds` (default 10) inputs. Losing an entire mirror to one
+  registry blip was pure waste.
+- **`go-workflow.yml`** retries the `govulncheck` install. **`python-package-workflow.yml`**
+  retries the `pip` installs and the `pip-audit` install. In both cases only the
+  INSTALL retries — the scanners themselves exit non-zero when they *find*
+  something, so retrying them would re-run a real finding three times and report
+  the same failure more slowly.
+- **`create-badges.yml`** retries the badge push, and **`mcp-registry-publish.yml`**
+  retries the release lookup and the publisher download. The age-gate is
+  deliberately *not* softened: a transient API failure retries, but an empty
+  `published_at` still aborts, because skipping a supply-chain gate * because the
+  API was unreachable* defeats the point of having one.
+- **Every one of these still fails the job if it never succeeds.** Retrying is
+  for absorbing a blip, not for turning a real failure green.
+
+- **Correction: `archive.yml`'s `fail_on_error` now defaults to `true`.** It
+  shipped defaulting to `false`, which was wrong — a green run that archived
+  nothing is a lie, and that contradicted the convention `clawhub-publish.yml`
+  already set for exactly the same situation. The job is deliberately
+  independent, nothing `needs:` it, so going red reports the truth without
+  blocking the release or any other job. That is the split worth keeping: fail
+  honestly, but never fail something that had no business being blocked.
+
 ## v0.31.0 — 2026-07-31
 
 - **`docker-image-workflow.yml`: `scan_fail_build` now defaults to `false`.** An

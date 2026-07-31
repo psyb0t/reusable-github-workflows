@@ -87,9 +87,35 @@ jobs:
         run: |
           set -euo pipefail
 
+          retry() {
+            local attempt=1 delay
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge 3 ]; then
+                echo "::error::gave up after 3 attempt(s): $*" >&2
+
+                return 1
+              fi
+
+              delay=$((10 * (2 ** (attempt - 1))))
+              echo "attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
           # Age-gate: refuse a release published within the supply-chain danger
           # window (fresh releases are the primary hijack window).
-          published="$(curl -fsS "https://api.github.com/repos/modelcontextprotocol/registry/releases/tags/${PUBLISHER_VERSION}" \
+          #
+          # The lookup retries on a transient GitHub API failure, but note what
+          # is NOT softened: an empty published_at still aborts. Retrying a
+          # network blip is fine; skipping the age gate because the API was
+          # unreachable would defeat the point of having it.
+          published="$(retry curl -fsS "https://api.github.com/repos/modelcontextprotocol/registry/releases/tags/${PUBLISHER_VERSION}" \
             | jq -r '.published_at // empty')"
           if [ -z "$published" ]; then
             echo "::error::mcp-publisher ${PUBLISHER_VERSION} not found on GitHub releases"; exit 1
@@ -103,7 +129,22 @@ jobs:
 
           arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
           url="https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/mcp-publisher_linux_${arch}.tar.gz"
-          curl -fsSL "$url" | tar -xz mcp-publisher
+          # Not wrapped in retry(): the pipe means curl's exit status is not what
+          # the shell reports, so a retry would key off tar instead. The
+          # download runs in a subshell whose whole pipeline is the retried unit.
+          attempt=1
+          until curl -fsSL "$url" | tar -xz mcp-publisher; do
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::mcp-publisher download failed after 3 attempts" >&2
+              exit 1
+            fi
+
+            delay=$((10 * (2 ** (attempt - 1))))
+            echo "download attempt ${attempt} failed; retrying in ${delay}s" >&2
+            sleep "${delay}"
+            attempt=$((attempt + 1))
+          done
+
           test -x ./mcp-publisher || { echo "::error::mcp-publisher not extracted"; exit 1; }
 
       - name: Stamp version + OCI image tag from git tag

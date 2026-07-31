@@ -181,4 +181,25 @@ jobs:
           fi
 
           git commit -m "chore(badges): update [skip ci]"
-          git push origin "HEAD:$BR"
+
+          # Retried because the push is pure network, and a blip here silently
+          # loses the badge update for that run. A non-fast-forward rejection
+          # would not be helped by a retry, but the concurrency group already
+          # serializes writers per repo and branch, so a competing writer is not
+          # the expected failure here -- a flaky connection is.
+          #
+          # It still exits non-zero if the push never lands. A green run that
+          # did not publish would leave the README pointing at a stale badge
+          # while claiming success.
+          attempt=1
+          until git push origin "HEAD:$BR"; do
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::badge push failed after 3 attempts" >&2
+              exit 1
+            fi
+
+            delay=$((10 * (2 ** (attempt - 1))))
+            echo "push attempt ${attempt} failed; retrying in ${delay}s" >&2
+            sleep "${delay}"
+            attempt=$((attempt + 1))
+          done
