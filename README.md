@@ -30,7 +30,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 
 - **Third-party actions pinned by full commit SHA** — never a floating tag, so a re-pointed or compromised upstream tag can't silently change what runs.
 - **Least-privilege permissions** — the top level is `permissions: {}`; each job opts in to only the scopes its steps need (`contents: read`, `security-events: write`, …).
-- **Concurrency matches the resource** — a newer push on the same ref supersedes ordinary in-flight work (tag pushes always complete); badge publishing serializes writers for each caller repository and output branch.
+- **Concurrency matches the resource** — a newer push on the same ref supersedes ordinary in-flight work (tag pushes always complete); badge publishing serializes writers for each caller repository and output branch; mirroring serializes per caller repository without cancelling, since each run carries a real ref that still has to reach the targets.
 - **Triggered from `push`** — you wire `on: [push]`; the workflow itself decides what to act on (branch vs. tag) and no-ops on refs it doesn't handle.
 - **Supply-chain discipline on any tooling install** — exact version pins, an age-gate that refuses freshly-published releases, and `npm install --ignore-scripts`.
 
@@ -557,7 +557,9 @@ The mirror is one-way and authoritative. `--force` means anything pushed directl
 Two implementation details are deliberate and worth knowing before you copy the pattern elsewhere:
 
 - **It bare-clones the source instead of `actions/checkout` + `git push --all`.** A checkout creates exactly ONE local branch — every other branch stays a remote-tracking ref — so `--all` silently mirrors a single branch and quietly drops the rest. The bare clone carries all heads and tags, and the push uses explicit `+refs/heads/*` / `+refs/tags/*` refspecs.
-- **Every API call uses `curl --fail-with-body`.** Plain `curl -s` exits 0 on 401 / 404 / 500, so `set -euo pipefail` does *not* catch a revoked token or a missing scope — the step would go green having synced nothing.
+- **Every API call uses `curl --fail-with-body`, and the response body ends up in the error annotation.** Plain `curl -s` exits 0 on 401 / 404 / 500, so `set -euo pipefail` does *not* catch a revoked token or a missing scope — the step would go green having synced nothing. Discarding the body with `-o /dev/null` is almost as bad: the first live failure reported nothing but `curl: (22) ... error: 422`, with the message explaining it thrown away.
+
+Pushing a commit and its tag together starts two runs about a second apart, so runs are serialized per caller repository (without `cancel-in-progress` — each one carries a real ref that still has to reach the targets). Repo creation tolerates losing that race anyway: on a failed create it re-checks existence and continues if the repo is there.
 
 Platform differences that aren't obvious:
 

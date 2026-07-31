@@ -4,6 +4,18 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.23.1 — 2026-07-31
+
+Documentation only, no behavior change.
+
+- The README's `git-mirror.yml` section was missing the concurrency behaviour
+  added in v0.22.1: runs serialize per caller repository without cancelling,
+  and repo creation tolerates losing a race. The shared-conventions list now
+  names mirroring alongside the other workflows that serialize writers.
+- Documented that a failed API call puts the response body in the error
+  annotation, and why `-o /dev/null` was wrong: the first live failure reported
+  only `curl: (22) ... error: 422`, with the message explaining it discarded.
+
 ## v0.23.0 — 2026-07-31
 
 - **`git-mirror.yml` now syncs the GitHub homepage URL** to every target that
