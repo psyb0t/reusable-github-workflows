@@ -252,12 +252,16 @@ jobs:
               | .[0:25]
             ')
 
+            # Normalizing covers the documented rules, but Gitea can still
+            # refuse the array for a reason the normalizer does not model. The
+            # description is already synced by this point and the refs are the
+            # point of the job, so a rejected topic list is a warning, not a
+            # failed mirror.
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --argjson t "${topics}" '{topics: $t}')" \
               "${api}/repos/${OWNER}/${REPO}/topics" 2>&1); then
-              echo "::error::Codeberg topics sync failed: ${out}" >&2
-              exit 1
+              echo "::warning::Codeberg rejected the topics (${out}); description is synced, topics skipped" >&2
             fi
           fi
 
@@ -350,12 +354,27 @@ jobs:
               | if length > $max then .[0:($max - 3)] + "..." else . end
             ')
 
+            # Topics are sent with the description, then retried without them.
+            # GitLab validates the array as a unit and rejects the whole PUT
+            # with an opaque 422 if any single topic is unacceptable to it --
+            # a GitHub topic that is perfectly legal there can be refused here.
+            # Metadata is a nicety; the refs are the point. Losing the topics
+            # must not fail a mirror that otherwise works.
             if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
               -H "Content-Type: application/json" \
               -d "$(printf '%s' "${meta}" | jq -c --arg d "${description}" '{description: $d, topics: .topics}')" \
               "https://gitlab.com/api/v4/projects/${encoded}" 2>&1); then
-              echo "::error::GitLab metadata sync failed: ${out}" >&2
-              exit 1
+              echo "::warning::GitLab rejected the metadata with topics (${out}); retrying with the description alone" >&2
+
+              if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -nc --arg d "${description}" '{description: $d}')" \
+                "https://gitlab.com/api/v4/projects/${encoded}" 2>&1); then
+                echo "::error::GitLab metadata sync failed: ${out}" >&2
+                exit 1
+              fi
+
+              echo "description synced; topics skipped -- GitLab refused at least one of them"
             fi
           fi
 

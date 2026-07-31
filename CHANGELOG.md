@@ -4,6 +4,25 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.26.1 — 2026-07-31
+
+`git-mirror.yml`: a topic the target refuses no longer fails the whole mirror.
+
+- **GitLab metadata sync now retries without topics.** GitLab validates the
+  topic array as a unit and rejects the entire `PUT` with an opaque
+  `422 Project could not be updated!` if it dislikes any single entry — and a
+  topic that is perfectly legal on GitHub can be refused there, with nothing in
+  the response saying which one. Observed on a repo whose only offending topic
+  was `fileupload`, while `fileuploader` on the same repo was accepted. The sync
+  now falls back to sending the description alone and emits a warning, so the
+  mirror finishes.
+- **Codeberg topic failures are a warning too.** The normalizer already covers
+  Gitea's documented rules (lowercase, `[a-z0-9-]`, ≤35 chars, ≤25 topics), but
+  a rejection it does not model would previously have failed the job after the
+  description had already synced.
+- The reasoning in both cases: mirroring refs is what the job is for. Metadata
+  is a nicety, and losing the topics is not worth losing the mirror.
+
 ## v0.26.0 — 2026-07-31
 
 `go-workflow.yml`: the codegen-drift gate is now opt-in, and the `-` skip
