@@ -248,7 +248,18 @@ jobs:
           # fail the job on every repo at once.
           retry pip install --upgrade pip setuptools
 
-          pip-audit --strict --progress-spinner=off
+          # Deliberately NOT --strict. That flag fails the audit when any
+          # dependency merely could not be AUDITED, and on a release the
+          # project's own package is exactly that: the version has been bumped
+          # locally but the publish job has not run yet, so PyPI still has the
+          # previous one and pip-audit reports
+          # "Dependency not found on PyPI and could not be audited".
+          #
+          # That would fail every release of every package here, for a reason
+          # that has nothing to do with security. Without --strict, pip-audit
+          # still exits non-zero when it FINDS a vulnerability, which is the
+          # thing worth failing on.
+          pip-audit --progress-spinner=off
 
   pypi-publish:
     runs-on: ${{ inputs.runs_on }}

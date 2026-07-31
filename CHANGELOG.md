@@ -4,6 +4,22 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.32.2 — 2026-07-31
+
+**Fixes `pip-audit` failing on every release.** Any repo calling
+`python-package-workflow.yml` for a published package was affected.
+
+- `pip-audit` ran with `--strict`, which fails the audit when a dependency
+  merely could not be **audited** — and on a release the project's own package
+  is exactly that. The version is bumped in the commit being released, the
+  publish job has not run yet, so PyPI still serves the previous version and
+  pip-audit reports `Dependency not found on PyPI and could not be audited`.
+  Every release of every package here would have hit it, for a reason with
+  nothing to do with security.
+- `--strict` is dropped. pip-audit still exits non-zero when it **finds** a
+  vulnerability, which is the thing worth failing on; it no longer fails because
+  it could not look something up.
+
 ## v0.32.1 — 2026-07-31
 
 - **`python-package-workflow.yml`: upgrade `pip` and `setuptools` before
