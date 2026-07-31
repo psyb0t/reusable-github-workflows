@@ -1,0 +1,454 @@
+name: Git Mirror
+
+# Push-mirrors this repository to Codeberg, GitLab, Gitee and/or Bitbucket, and
+# syncs the GitHub description + topics to each one that supports them.
+#
+# Topics support is NOT universal -- only Codeberg (Gitea) and GitLab have the
+# concept. Gitee's repo-edit endpoint has no topics field and Bitbucket has no
+# topics concept at all, so those two sync the description only.
+#
+# Every target is OPT-IN and independent: enable only the ones you want, and a
+# failure on one does not stop the others (separate jobs, no `needs`).
+#
+# Caller:
+#
+#   jobs:
+#     mirror:
+#       if: github.event_name == 'push'
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/git-mirror.yml@master
+#       with:
+#         codeberg_enabled: true
+#         gitlab_enabled: true
+#         gitee_enabled: true
+#         bitbucket_enabled: false
+#       secrets:
+#         codeberg_token: ${{ secrets.CODEBERG_TOKEN }}
+#         gitlab_token: ${{ secrets.GITLAB_TOKEN }}
+#         gitee_token: ${{ secrets.GITEE_TOKEN }}
+#
+# Trigger it on `push` with `branches: ['**']` and `tags: ['**']` so every ref
+# lands. The mirror is one-way and authoritative: anything pushed directly to a
+# target that GitHub does not have is overwritten, and with `prune: true`
+# (default) refs deleted here are deleted there. These are read-only copies.
+#
+# Two things this does NOT do the obvious way, both deliberate:
+#
+#   1. It bare-clones the source instead of using actions/checkout + `git push
+#      --all`. A checkout creates exactly ONE local branch (the rest stay as
+#      remote-tracking refs), so `--all` silently mirrors a single branch and
+#      quietly loses every other one. The bare clone carries all heads + tags.
+#   2. Every API call uses `--fail-with-body`. Plain `curl -s` exits 0 on 401 /
+#      404 / 500, so `set -euo pipefail` does NOT catch a revoked token or a
+#      missing scope -- the step goes green having synced nothing.
+#
+# Tokens need repo-create + repo-write scope on each platform. Bitbucket also
+# needs a workspace (it namespaces repos under one) and has NO topics concept at
+# all, so only the description syncs there.
+
+on:
+  workflow_call:
+    inputs:
+      codeberg_enabled:
+        description: "Mirror to Codeberg"
+        required: false
+        type: boolean
+        default: false
+
+      gitlab_enabled:
+        description: "Mirror to GitLab"
+        required: false
+        type: boolean
+        default: false
+
+      bitbucket_enabled:
+        description: "Mirror to Bitbucket"
+        required: false
+        type: boolean
+        default: false
+
+      gitee_enabled:
+        description: "Mirror to Gitee"
+        required: false
+        type: boolean
+        default: false
+
+      create_missing:
+        description: "Create the repo on the target when it does not exist yet"
+        required: false
+        type: boolean
+        default: true
+
+      sync_metadata:
+        description: "Sync the GitHub description (and topics, where supported)"
+        required: false
+        type: boolean
+        default: true
+
+      prune:
+        description: "Delete refs on the target that no longer exist here"
+        required: false
+        type: boolean
+        default: true
+
+      codeberg_url:
+        description: "Base URL of the Codeberg/Gitea instance"
+        required: false
+        type: string
+        default: "https://codeberg.org"
+
+      target_owner:
+        description: "Owner/namespace on Codeberg + GitLab (defaults to this repo's owner)"
+        required: false
+        type: string
+        default: ""
+
+      runs_on:
+        description: "Runner label"
+        required: false
+        type: string
+        default: ubuntu-latest
+
+    secrets:
+      codeberg_token:
+        description: "Codeberg token with repo write + create scope"
+        required: false
+      gitlab_token:
+        description: "GitLab PAT with api scope (project creation needs api, not just write_repository)"
+        required: false
+      bitbucket_user:
+        description: "Bitbucket username"
+        required: false
+      bitbucket_token:
+        description: "Bitbucket app password with Repositories: Admin + Write"
+        required: false
+      bitbucket_workspace:
+        description: "Bitbucket workspace the repo lives under"
+        required: false
+      gitee_token:
+        description: "Gitee private access token with projects scope"
+        required: false
+      gitee_user:
+        description: "Gitee username for the push (defaults to the target owner)"
+        required: false
+
+permissions: {}
+
+jobs:
+  codeberg:
+    if: inputs.codeberg_enabled
+    name: Codeberg
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ secrets.codeberg_token }}
+          BASE: ${{ inputs.codeberg_url }}
+          OWNER: ${{ inputs.target_owner != '' && inputs.target_owner || github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          SOURCE: ${{ github.repository }}
+          CREATE_MISSING: ${{ inputs.create_missing }}
+          SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PRUNE: ${{ inputs.prune }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::codeberg_enabled is true but the codeberg_token secret is empty" >&2
+            exit 1
+          fi
+
+          api="${BASE}/api/v1"
+          auth=(-H "Authorization: token ${TOKEN}")
+
+          status=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" \
+            "${api}/repos/${OWNER}/${REPO}")
+
+          if [ "${status}" = "404" ]; then
+            if [ "${CREATE_MISSING}" != "true" ]; then
+              echo "::error::${OWNER}/${REPO} does not exist on Codeberg and create_missing is false" >&2
+              exit 1
+            fi
+
+            echo "creating ${OWNER}/${REPO} on Codeberg"
+            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg n "${REPO}" '{name: $n, private: false, auto_init: false}')" \
+              "${api}/user/repos"
+          elif [ "${status}" != "200" ]; then
+            echo "::error::Codeberg lookup returned HTTP ${status}" >&2
+            exit 1
+          fi
+
+          if [ "${SYNC_METADATA}" = "true" ]; then
+            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
+
+            curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg d "$(printf '%s' "${meta}" | jq -r .description)" '{description: $d}')" \
+              "${api}/repos/${OWNER}/${REPO}"
+
+            # Gitea validates every topic and rejects the WHOLE array if one is
+            # bad: lowercase, [a-z0-9-] only, must start alphanumeric, <=35
+            # chars, <=25 topics. Normalize rather than lose the lot.
+            topics=$(printf '%s' "${meta}" | jq -c '
+              [ .topics[]
+                | ascii_downcase
+                | gsub("[^a-z0-9-]"; "-")
+                | sub("^-+"; "")
+                | sub("-+$"; "")
+                | .[0:35]
+              ]
+              | map(select(length > 0))
+              | unique
+              | .[0:25]
+            ')
+
+            curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --argjson t "${topics}" '{topics: $t}')" \
+              "${api}/repos/${OWNER}/${REPO}/topics"
+          fi
+
+          host="${BASE#https://}"
+          git clone --bare --quiet \
+            "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
+          cd src.git
+
+          prune_flag=()
+          if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
+
+          git push --force "${prune_flag[@]}" \
+            "https://${TOKEN}@${host}/${OWNER}/${REPO}.git" \
+            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+          echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to Codeberg"
+
+  gitlab:
+    if: inputs.gitlab_enabled
+    name: GitLab
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ secrets.gitlab_token }}
+          OWNER: ${{ inputs.target_owner != '' && inputs.target_owner || github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          SOURCE: ${{ github.repository }}
+          CREATE_MISSING: ${{ inputs.create_missing }}
+          SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PRUNE: ${{ inputs.prune }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::gitlab_enabled is true but the gitlab_token secret is empty" >&2
+            exit 1
+          fi
+
+          auth=(-H "PRIVATE-TOKEN: ${TOKEN}")
+
+          # GitLab looks projects up by URL-encoded path: owner/repo -> owner%2Frepo
+          encoded=$(jq -rn --arg p "${OWNER}/${REPO}" '$p | @uri')
+
+          status=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" \
+            "https://gitlab.com/api/v4/projects/${encoded}")
+
+          if [ "${status}" = "404" ]; then
+            if [ "${CREATE_MISSING}" != "true" ]; then
+              echo "::error::${OWNER}/${REPO} does not exist on GitLab and create_missing is false" >&2
+              exit 1
+            fi
+
+            echo "creating ${OWNER}/${REPO} on GitLab"
+            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg n "${REPO}" '{name: $n, path: $n, visibility: "public"}')" \
+              "https://gitlab.com/api/v4/projects"
+          elif [ "${status}" != "200" ]; then
+            echo "::error::GitLab lookup returned HTTP ${status}" >&2
+            exit 1
+          fi
+
+          if [ "${SYNC_METADATA}" = "true" ]; then
+            meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), topics: (.topics // [])}')
+
+            curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(printf '%s' "${meta}" | jq -c '{description: .description, topics: .topics}')" \
+              "https://gitlab.com/api/v4/projects/${encoded}"
+          fi
+
+          git clone --bare --quiet \
+            "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
+          cd src.git
+
+          prune_flag=()
+          if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
+
+          git push --force "${prune_flag[@]}" \
+            "https://oauth2:${TOKEN}@gitlab.com/${OWNER}/${REPO}.git" \
+            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+          echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to GitLab"
+
+  gitee:
+    if: inputs.gitee_enabled
+    name: Gitee
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ secrets.gitee_token }}
+          OWNER: ${{ inputs.target_owner != '' && inputs.target_owner || github.repository_owner }}
+          USERNAME: ${{ secrets.gitee_user }}
+          REPO: ${{ github.event.repository.name }}
+          SOURCE: ${{ github.repository }}
+          CREATE_MISSING: ${{ inputs.create_missing }}
+          SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PRUNE: ${{ inputs.prune }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::gitee_enabled is true but the gitee_token secret is empty" >&2
+            exit 1
+          fi
+
+          # Gitee namespaces repos under the username, so the owner is the sane
+          # default for the push identity when gitee_user is not given.
+          user="${USERNAME:-${OWNER}}"
+
+          api="https://gitee.com/api/v5"
+          auth=(-H "Authorization: token ${TOKEN}")
+
+          status=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" \
+            "${api}/repos/${OWNER}/${REPO}")
+
+          if [ "${status}" = "404" ]; then
+            if [ "${CREATE_MISSING}" != "true" ]; then
+              echo "::error::${OWNER}/${REPO} does not exist on Gitee and create_missing is false" >&2
+              exit 1
+            fi
+
+            echo "creating ${OWNER}/${REPO} on Gitee"
+            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg n "${REPO}" '{name: $n, path: $n, private: false}')" \
+              "${api}/user/repos"
+          elif [ "${status}" != "200" ]; then
+            echo "::error::Gitee lookup returned HTTP ${status}" >&2
+            exit 1
+          fi
+
+          if [ "${SYNC_METADATA}" = "true" ]; then
+            # Gitee has no topics field on the repo-edit endpoint, so this is
+            # description-only. `name` is REQUIRED on the PATCH -- unlike Gitea
+            # and GitLab, a description-only body is rejected -- so it is sent
+            # unchanged alongside the description.
+            description=$(gh api "repos/${SOURCE}" --jq '.description // ""')
+
+            curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg n "${REPO}" --arg d "${description}" '{name: $n, description: $d}')" \
+              "${api}/repos/${OWNER}/${REPO}"
+          fi
+
+          git clone --bare --quiet \
+            "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
+          cd src.git
+
+          prune_flag=()
+          if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
+
+          git push --force "${prune_flag[@]}" \
+            "https://${user}:${TOKEN}@gitee.com/${OWNER}/${REPO}.git" \
+            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+          echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to Gitee"
+
+  bitbucket:
+    if: inputs.bitbucket_enabled
+    name: Bitbucket
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          USERNAME: ${{ secrets.bitbucket_user }}
+          TOKEN: ${{ secrets.bitbucket_token }}
+          WORKSPACE: ${{ secrets.bitbucket_workspace }}
+          REPO: ${{ github.event.repository.name }}
+          SOURCE: ${{ github.repository }}
+          CREATE_MISSING: ${{ inputs.create_missing }}
+          SYNC_METADATA: ${{ inputs.sync_metadata }}
+          PRUNE: ${{ inputs.prune }}
+        run: |
+          set -euo pipefail
+
+          # Named explicitly rather than derived from the variable name: the
+          # secret is bitbucket_user, not bitbucket_username, and an error
+          # message naming an input that does not exist is worse than none.
+          missing=()
+          [ -n "${USERNAME}" ] || missing+=("bitbucket_user")
+          [ -n "${TOKEN}" ] || missing+=("bitbucket_token")
+          [ -n "${WORKSPACE}" ] || missing+=("bitbucket_workspace")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::bitbucket_enabled is true but these secrets are empty: ${missing[*]}" >&2
+            exit 1
+          fi
+
+          api="https://api.bitbucket.org/2.0/repositories/${WORKSPACE}/${REPO}"
+          auth=(-u "${USERNAME}:${TOKEN}")
+
+          status=$(curl -sS -o /dev/null -w "%{http_code}" "${auth[@]}" "${api}")
+
+          if [ "${status}" = "404" ]; then
+            if [ "${CREATE_MISSING}" != "true" ]; then
+              echo "::error::${WORKSPACE}/${REPO} does not exist on Bitbucket and create_missing is false" >&2
+              exit 1
+            fi
+
+            echo "creating ${WORKSPACE}/${REPO} on Bitbucket"
+            curl -sS --fail-with-body -o /dev/null -X POST "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d '{"scm": "git", "is_private": false}' \
+              "${api}"
+          elif [ "${status}" != "200" ]; then
+            echo "::error::Bitbucket lookup returned HTTP ${status}" >&2
+            exit 1
+          fi
+
+          if [ "${SYNC_METADATA}" = "true" ]; then
+            # Bitbucket has no topics/tags concept -- description only.
+            description=$(gh api "repos/${SOURCE}" --jq '.description // ""')
+
+            curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg d "${description}" '{description: $d}')" \
+              "${api}"
+          fi
+
+          git clone --bare --quiet \
+            "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE}.git" src.git
+          cd src.git
+
+          prune_flag=()
+          if [ "${PRUNE}" = "true" ]; then prune_flag=(--prune); fi
+
+          git push --force "${prune_flag[@]}" \
+            "https://${USERNAME}:${TOKEN}@bitbucket.org/${WORKSPACE}/${REPO}.git" \
+            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+          echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to Bitbucket"

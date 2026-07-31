@@ -21,6 +21,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [clawhub-publish.yml](#clawhub-publishyml)
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
   - [create-badges.yml](#create-badgesyml)
+  - [git-mirror.yml](#git-mirroryml)
 - [License](#license)
 
 ## Shared conventions
@@ -44,6 +45,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
+| [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee / Bitbucket, creating the repo and syncing description + topics. |
 
 ## Pinning
 
@@ -544,6 +546,80 @@ Then embed in the README (raw, GitHub-hosted, no external service):
 ![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)
 ![license](https://raw.githubusercontent.com/<owner>/<repo>/badges/license.svg)
 ![version](https://raw.githubusercontent.com/<owner>/<repo>/badges/version.svg)
+```
+
+## git-mirror.yml
+
+Push-mirrors the caller repo to Codeberg, GitLab, Gitee and/or Bitbucket the moment you push to GitHub, creating the destination repo if it doesn't exist yet and syncing the GitHub description (plus topics, where the platform has them). Every target is opt-in and runs as its own job with no `needs` between them, so enabling a second platform can't break the first, and a bad token on one doesn't hold up the others.
+
+The mirror is one-way and authoritative. `--force` means anything pushed directly to a target that GitHub doesn't have is overwritten, and `prune: true` (the default) deletes refs there that no longer exist here — so the copies stay byte-identical to GitHub. Set `prune: false` if you'd rather stale branches linger than vanish. These are read-only mirrors; don't accept contributions on them.
+
+Two implementation details are deliberate and worth knowing before you copy the pattern elsewhere:
+
+- **It bare-clones the source instead of `actions/checkout` + `git push --all`.** A checkout creates exactly ONE local branch — every other branch stays a remote-tracking ref — so `--all` silently mirrors a single branch and quietly drops the rest. The bare clone carries all heads and tags, and the push uses explicit `+refs/heads/*` / `+refs/tags/*` refspecs.
+- **Every API call uses `curl --fail-with-body`.** Plain `curl -s` exits 0 on 401 / 404 / 500, so `set -euo pipefail` does *not* catch a revoked token or a missing scope — the step would go green having synced nothing.
+
+Platform differences that aren't obvious:
+
+| Platform | Description | Topics | Notes |
+|---|---|---|---|
+| Codeberg (Gitea) | yes | yes | Gitea rejects the whole topics array if one entry is invalid, so topics are lowercased, stripped to `[a-z0-9-]`, de-duped and capped at 25. |
+| GitLab | yes | yes | Project creation needs a token with `api` scope, not just `write_repository`. |
+| Gitee | yes | **no** | `name` is **required** on the repo-edit call — a description-only body is rejected — so it's sent unchanged alongside the description. |
+| Bitbucket | yes | **no** | Namespaces repos under a workspace, so `bitbucket_workspace` is required. Has no topics concept at all. |
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `codeberg_enabled` | `false` | Mirror to Codeberg. |
+| `gitlab_enabled` | `false` | Mirror to GitLab. |
+| `gitee_enabled` | `false` | Mirror to Gitee. |
+| `bitbucket_enabled` | `false` | Mirror to Bitbucket. |
+| `create_missing` | `true` | Create the repo on the target when it doesn't exist yet. |
+| `sync_metadata` | `true` | Sync the GitHub description (and topics, where supported). |
+| `prune` | `true` | Delete refs on the target that no longer exist here. |
+| `codeberg_url` | `https://codeberg.org` | Base URL of the Codeberg/Gitea instance. |
+| `target_owner` | `""` | Owner/namespace on Codeberg, GitLab and Gitee (empty = this repo's owner). |
+| `runs_on` | `ubuntu-latest` | Runner to use. |
+
+### Secrets
+
+| Secret | Needed for | Description |
+|---|---|---|
+| `codeberg_token` | Codeberg | Token with repo write + create scope. |
+| `gitlab_token` | GitLab | PAT with `api` scope. |
+| `gitee_token` | Gitee | Private access token with projects scope. |
+| `gitee_user` | Gitee | Username for the push (optional — defaults to the target owner). |
+| `bitbucket_user` | Bitbucket | Username. |
+| `bitbucket_token` | Bitbucket | App password with Repositories: Admin + Write. |
+| `bitbucket_workspace` | Bitbucket | Workspace the repo lives under. |
+
+A target that's enabled with an empty secret fails immediately with a message naming the exact secret to set, rather than failing deep inside a push.
+
+### Example
+
+Trigger on every branch and tag so nothing is missed:
+
+```yaml
+name: pipeline
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+
+jobs:
+  git-mirror:
+    uses: psyb0t/reusable-github-workflows/.github/workflows/git-mirror.yml@master
+    with:
+      codeberg_enabled: true
+      gitlab_enabled: true
+      gitee_enabled: true
+    secrets:
+      codeberg_token: ${{ secrets.CODEBERG_TOKEN }}
+      gitlab_token: ${{ secrets.GITLAB_TOKEN }}
+      gitee_token: ${{ secrets.GITEE_TOKEN }}
 ```
 
 ## License

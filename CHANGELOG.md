@@ -4,6 +4,34 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.22.0 — 2026-07-31
+
+- **New `git-mirror.yml`.** Push-mirrors the caller repo to Codeberg, GitLab,
+  Gitee and/or Bitbucket, creating the destination repo when it does not exist
+  and syncing the GitHub description (plus topics, on the two platforms that
+  have them). Each target is opt-in via `codeberg_enabled` / `gitlab_enabled` /
+  `gitee_enabled` / `bitbucket_enabled` and runs as its own job with no `needs`
+  between them, so a bad token on one platform cannot hold up the others.
+- The mirror is one-way and authoritative: the push is forced, and with
+  `prune: true` (default) refs deleted on GitHub are deleted on the target, so
+  the copies stay identical. Set `prune: false` to leave stale branches alone.
+- Two implementation choices that look unusual and are deliberate, both
+  documented in the workflow header:
+  - It bare-clones the source rather than using `actions/checkout` plus
+    `git push --all`. A checkout creates exactly one local branch — every other
+    branch stays a remote-tracking ref — so `--all` mirrors a single branch and
+    silently drops the rest. The push uses explicit `+refs/heads/*` and
+    `+refs/tags/*` refspecs off a bare clone instead.
+  - Every API call passes `curl --fail-with-body`. Plain `curl -s` exits 0 on
+    401/404/500, so `set -euo pipefail` does not catch a revoked token or a
+    missing scope, and the step would go green having synced nothing.
+- Platform differences worth knowing before enabling one: Gitea rejects the
+  entire topics array if a single entry is invalid, so topics are lowercased,
+  reduced to `[a-z0-9-]`, de-duplicated and capped at 25; GitLab project
+  creation needs a token with `api` scope, not just `write_repository`; Gitee
+  requires `name` on its repo-edit call and has no topics field; Bitbucket
+  namespaces repos under a workspace and has no topics concept at all.
+
 ## v0.21.0 — 2026-07-31
 
 - **`fail_on_upstream_error` now defaults to `true`.** v0.20.0 shipped it `false`,
