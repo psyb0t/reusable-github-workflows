@@ -103,10 +103,10 @@ on:
         default: true
 
       description_prefix:
-        description: "Prepended to the synced description so a visitor can tell the copy from the original. Empty string disables it."
+        description: "Prepended to the synced description. Empty by default."
         required: false
         type: string
-        default: "[mirror] "
+        default: ""
 
       description_max_length:
         description: "Cap on the synced description, in CHARACTERS (not bytes). Over it, the text is cut and ends in '...'. GitLab and Gitee both reject anything past 2000."

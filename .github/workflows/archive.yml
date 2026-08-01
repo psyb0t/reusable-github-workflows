@@ -55,7 +55,7 @@ on:
         default: ""
 
       capture_outlinks:
-        description: "Also archive every page the archived page links to. REQUIRES the wayback_access_key / wayback_secret_key secrets: outlink capture lives behind the authenticated Save Page Now API, and the keyless path silently ignores the flag rather than refusing it."
+        description: "Also archive every page the archived page links to. REQUIRES the archiveorg_access_key / archiveorg_secret_key secrets: outlink capture lives behind the authenticated Save Page Now API, and the keyless path silently ignores the flag rather than refusing it."
         required: false
         type: boolean
         default: true
@@ -97,12 +97,12 @@ on:
         default: "ubuntu-latest"
 
     secrets:
-      wayback_access_key:
-        description: "archive.org S3-style access key. Optional: without it the job uses the keyless save, which works but cannot capture outlinks or screenshots. Generate the pair at https://archive.org/account/s3.php"
+      archiveorg_access_key:
+        description: "archive.org S3 access key -- an account credential, not a Wayback-only one: the same pair signs Save Page Now, the S3 upload API and the metadata API. Optional; without it the job falls back to the keyless save, which works but cannot capture outlinks or screenshots. Generate at https://archive.org/account/s3.php"
         required: false
 
-      wayback_secret_key:
-        description: "archive.org S3-style secret key, paired with wayback_access_key"
+      archiveorg_secret_key:
+        description: "archive.org S3 secret key, paired with archiveorg_access_key"
         required: false
 
 concurrency:
@@ -131,8 +131,8 @@ jobs:
           MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           BACKOFF: ${{ inputs.backoff_seconds }}
           URL_TIMEOUT: ${{ inputs.url_timeout_seconds }}
-          ACCESS_KEY: ${{ secrets.wayback_access_key }}
-          SECRET_KEY: ${{ secrets.wayback_secret_key }}
+          ACCESS_KEY: ${{ secrets.archiveorg_access_key }}
+          SECRET_KEY: ${{ secrets.archiveorg_secret_key }}
         run: |
           set -euo pipefail
 
@@ -151,7 +151,7 @@ jobs:
           fi
 
           if [ "${CAPTURE_OUTLINKS}" = "true" ] && [ "${authed}" != "true" ]; then
-            echo "::warning::capture_outlinks is on but no archive.org keys were provided; outlinks will NOT be captured. Set wayback_access_key and wayback_secret_key, or turn the input off to silence this."
+            echo "::warning::capture_outlinks is on but no archive.org keys were provided; outlinks will NOT be captured. Set archiveorg_access_key and archiveorg_secret_key, or turn the input off to silence this."
           fi
 
           # Returns 0 as soon as a save is confirmed. Retries only what is worth
