@@ -66,6 +66,24 @@ on:
         type: boolean
         default: false
 
+      item_upload_enabled:
+        description: "Upload the repository contents to archive.org as an item of its own. Unlike the Wayback save (which keeps the rendered page) and Software Heritage (which keeps the git object graph), this produces a browsable, downloadable copy of the working tree with real metadata attached. Requires the archiveorg key pair."
+        required: false
+        type: boolean
+        default: true
+
+      item_identifier_prefix:
+        description: "Prefixed to the repo name to form the archive.org identifier. Identifiers are GLOBAL and permanent -- an unprefixed one is a landgrab that will eventually collide with someone else's project of the same name."
+        required: false
+        type: string
+        default: "psyb0t-"
+
+      item_collection:
+        description: "archive.org collection to file the item under. `opensource` is the open self-upload collection; anything else generally has to be granted."
+        required: false
+        type: string
+        default: "opensource"
+
       fail_on_error:
         description: "Fail the job when an archive request is still refused after every retry. On by default: a green run that archived nothing is a lie, and this job is deliberately independent — nothing `needs:` it, so going red reports the truth without blocking a release or any other job. Set false only if you would rather not see it."
         required: false
@@ -379,4 +397,147 @@ jobs:
               echo "::error::Software Heritage save failed and fail_on_error is true" >&2
               exit 1
             fi
+          fi
+
+  internet-archive-item:
+    if: inputs.item_upload_enabled
+    name: archive.org item
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the working tree
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Upload the repository as an item
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.repository }}
+          REPO: ${{ github.event.repository.name }}
+          REF: ${{ github.ref_name }}
+          PREFIX: ${{ inputs.item_identifier_prefix }}
+          COLLECTION: ${{ inputs.item_collection }}
+          FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF: ${{ inputs.backoff_seconds }}
+          ACCESS_KEY: ${{ secrets.archiveorg_access_key }}
+          SECRET_KEY: ${{ secrets.archiveorg_secret_key }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ACCESS_KEY}" ] || [ -z "${SECRET_KEY}" ]; then
+            echo "::warning::no archive.org key pair; skipping the item upload"
+
+            exit 0
+          fi
+
+          identifier="${PREFIX}${REPO}"
+          echo "item: https://archive.org/details/${identifier}"
+
+          # One tarball rather than a file-per-request: a repo of any size would
+          # otherwise be hundreds of round trips, and archive.org unpacks the
+          # archive on its side into a browsable listing anyway.
+          tarball="${identifier}-${REF//\//-}.tar.gz"
+          tar --exclude-vcs -czf "/tmp/${tarball}" .
+          size=$(stat -c%s "/tmp/${tarball}")
+          echo "packed ${size} bytes as ${tarball}"
+
+          meta=$(gh api "repos/${SOURCE}" --jq '{
+            description: (.description // ""),
+            homepage: (.homepage // ""),
+            topics: (.topics // []),
+            license: (.license.spdx_id // ""),
+            language: (.language // "")
+          }')
+
+          description=$(printf '%s' "${meta}" | jq -r '.description')
+          homepage=$(printf '%s' "${meta}" | jq -r '.homepage')
+          license=$(printf '%s' "${meta}" | jq -r '.license')
+
+          # The links are the point: an item nobody can trace back to a live
+          # project is a tarball with no context. Source always, project page
+          # when the repo has one.
+          long_description="Source: https://github.com/${SOURCE}"
+          if [ -n "${homepage}" ]; then
+            long_description="${long_description}<br>Project page: ${homepage}"
+          fi
+          if [ -n "${description}" ]; then
+            long_description="${description}<br><br>${long_description}"
+          fi
+
+          headers=(
+            -H "Authorization: LOW ${ACCESS_KEY}:${SECRET_KEY}"
+            -H "x-amz-auto-make-bucket:1"
+            -H "x-archive-meta-mediatype:software"
+            -H "x-archive-meta-collection:${COLLECTION}"
+            -H "x-archive-meta-title:${SOURCE}"
+            -H "x-archive-meta-creator:${GITHUB_REPOSITORY_OWNER}"
+            -H "x-archive-meta-description:${long_description}"
+            -H "x-archive-meta-originalurl:https://github.com/${SOURCE}"
+            # Tells archive.org to unpack the tarball into the item, so the item
+            # page shows the actual directory rather than one opaque blob.
+            -H "x-archive-queue-derive:1"
+            -H "x-archive-extract-files:1"
+          )
+
+          if [ -n "${homepage}" ]; then
+            headers+=(-H "x-archive-meta-homepage:${homepage}")
+          fi
+
+          if [ -n "${license}" ] && [ "${license}" != "NOASSERTION" ]; then
+            headers+=(-H "x-archive-meta-licenseurl:https://spdx.org/licenses/${license}.html")
+          fi
+
+          # Subject headers are numbered, not repeated: a plain repeat overwrites
+          # rather than appends, so all but the last topic would vanish.
+          index=0
+          while IFS= read -r topic; do
+            [ -n "${topic}" ] || continue
+            headers+=(-H "x-archive-meta${index}-subject:${topic}")
+            index=$((index + 1))
+          done < <(printf '%s' "${meta}" | jq -r '.topics[]')
+
+          attempt=1
+          while [ "${attempt}" -le "${MAX_ATTEMPTS}" ]; do
+            if status=$(curl -sS -o /tmp/ia-response -w '%{http_code}' \
+              --retry 0 -X PUT "${headers[@]}" \
+              --upload-file "/tmp/${tarball}" \
+              "https://s3.us.archive.org/${identifier}/${tarball}"); then
+
+              if [ "${status}" = "200" ]; then
+                echo "uploaded on attempt ${attempt}"
+                echo "https://archive.org/details/${identifier}" >> "${GITHUB_STEP_SUMMARY}"
+
+                exit 0
+              fi
+            else
+              status="000"
+            fi
+
+            echo "attempt ${attempt}: HTTP ${status}"
+            head -c 400 /tmp/ia-response || true
+            echo
+
+            case "${status}" in
+              000 | 429 | 5*)
+                ;;
+              *)
+                echo "::warning::archive.org refused the upload with HTTP ${status}; not retryable"
+
+                break
+                ;;
+            esac
+
+            if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
+              delay=$((BACKOFF * (2 ** (attempt - 1))))
+              echo "waiting ${delay}s before the next attempt"
+              sleep "${delay}"
+            fi
+
+            attempt=$((attempt + 1))
+          done
+
+          if [ "${FAIL_ON_ERROR}" = "true" ]; then
+            echo "::error::the archive.org item upload did not succeed" >&2
+            exit 1
           fi
