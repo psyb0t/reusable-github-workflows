@@ -1,0 +1,277 @@
+name: Issue Pull
+
+# Copies issues opened on the Codeberg and GitLab mirrors into GitHub, so the
+# mirrors can carry a conversation without anyone having to watch them.
+#
+# Direction matters: this only ever READS the mirrors and WRITES here. Nothing
+# is pushed back, so no GitHub credential ever leaves this runner -- the relayed
+# issue is opened with the built-in GITHUB_TOKEN, which is scoped to this repo
+# and expires with the job. Reading public issues needs no token at all; the
+# mirror tokens are used when present purely for the higher rate limit.
+#
+# The relayed issue is authored by github-actions[bot], never by the repo owner:
+# an issue that claims to be written by you but was not is a lie you have to
+# live with forever, and a bot-authored issue does not re-trigger workflows.
+#
+# State lives in the relayed issues themselves. Each carries a marker comment
+# with the source URL, and that is what the next run diffs against -- so there
+# is no cache to evict, no state file to corrupt, and a run that dies halfway
+# simply picks up where it left off.
+
+on:
+  workflow_call:
+    inputs:
+      codeberg_enabled:
+        description: "Pull issues from the Codeberg mirror"
+        required: false
+        type: boolean
+        default: true
+
+      gitlab_enabled:
+        description: "Pull issues from the GitLab mirror"
+        required: false
+        type: boolean
+        default: true
+
+      codeberg_url:
+        description: "Base URL of the Codeberg/Gitea instance"
+        required: false
+        type: string
+        default: "https://codeberg.org"
+
+      target_owner:
+        description: "Owner on Codeberg + GitLab (defaults to this repo's owner)"
+        required: false
+        type: string
+        default: ""
+
+      jitter_seconds:
+        description: "Upper bound on a random delay before the first request. Every repo runs this on the same 6-hourly cadence, and GitHub fires a whole account's crons together; without a jitter that is one thundering herd per platform, every six hours, forever."
+        required: false
+        type: number
+        default: 600
+
+      label:
+        description: "Label put on every relayed issue. Also the query that finds them again, so changing it orphans everything relayed under the old one."
+        required: false
+        type: string
+        default: "relayed"
+
+      runs_on:
+        description: "Runner to use"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    secrets:
+      codeberg_token:
+        description: "Optional. Public issues read fine without it; it only raises the rate limit."
+        required: false
+
+      gitlab_token:
+        description: "Optional. Public issues read fine without it; it only raises the rate limit."
+        required: false
+
+concurrency:
+  group: issue-pull-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  pull:
+    name: Pull issues
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      issues: write
+    steps:
+      - name: Relay issues from the mirrors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.repository }}
+          OWNER: ${{ inputs.target_owner != '' && inputs.target_owner || github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          CODEBERG_ENABLED: ${{ inputs.codeberg_enabled }}
+          GITLAB_ENABLED: ${{ inputs.gitlab_enabled }}
+          CODEBERG_BASE: ${{ inputs.codeberg_url }}
+          CODEBERG_TOKEN: ${{ secrets.codeberg_token }}
+          GITLAB_TOKEN: ${{ secrets.gitlab_token }}
+          JITTER: ${{ inputs.jitter_seconds }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+
+          if [ "${JITTER}" -gt 0 ]; then
+            delay=$((RANDOM % JITTER))
+            echo "sleeping ${delay}s so every repo does not hit the mirrors at once"
+            sleep "${delay}"
+          fi
+
+          # Normalised shape both platforms are flattened into, so the relay
+          # logic below never has to care which one an issue came from:
+          #   {origin, url, title, body, author, state, comments, opened, closed}
+          foreign='[]'
+
+          if [ "${CODEBERG_ENABLED}" = "true" ]; then
+            cb_auth=()
+            if [ -n "${CODEBERG_TOKEN}" ]; then
+              cb_auth=(-H "Authorization: token ${CODEBERG_TOKEN}")
+            fi
+
+            # state=all: a run has to see closed issues too, or it can never
+            # notice that something it already relayed has since been resolved.
+            if cb=$(curl -sS --fail-with-body "${cb_auth[@]}" \
+              "${CODEBERG_BASE}/api/v1/repos/${OWNER}/${REPO}/issues?state=all&type=issues&limit=100" 2>&1); then
+
+              foreign=$(printf '%s' "${cb}" | jq -c --argjson acc "${foreign}" '
+                $acc + [ .[] | {
+                  origin: "Codeberg",
+                  url: .html_url,
+                  title: .title,
+                  body: (.body // ""),
+                  author: .user.login,
+                  state: .state,
+                  comments: .comments,
+                  opened: .created_at,
+                  closed: (.closed_at // "")
+                } ]
+              ')
+            else
+              echo "::warning::Codeberg issue list failed, skipping that side: ${cb}"
+            fi
+          fi
+
+          if [ "${GITLAB_ENABLED}" = "true" ]; then
+            gl_auth=()
+            if [ -n "${GITLAB_TOKEN}" ]; then
+              gl_auth=(-H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
+            fi
+
+            encoded="${OWNER}%2F${REPO}"
+
+            if gl=$(curl -sS --fail-with-body "${gl_auth[@]}" \
+              "https://gitlab.com/api/v4/projects/${encoded}/issues?state=all&per_page=100" 2>&1); then
+
+              foreign=$(printf '%s' "${gl}" | jq -c --argjson acc "${foreign}" '
+                $acc + [ .[] | {
+                  origin: "GitLab",
+                  url: .web_url,
+                  title: .title,
+                  body: (.description // ""),
+                  author: .author.username,
+                  state: (if .state == "opened" then "open" else "closed" end),
+                  comments: .user_notes_count,
+                  opened: .created_at,
+                  closed: (.closed_at // "")
+                } ]
+              ')
+            else
+              echo "::warning::GitLab issue list failed, skipping that side: ${gl}"
+            fi
+          fi
+
+          total=$(printf '%s' "${foreign}" | jq 'length')
+          echo "found ${total} issue(s) across the mirrors"
+
+          if [ "${total}" -eq 0 ]; then
+            exit 0
+          fi
+
+          # The label is how the relayed issues are found again, so it has to
+          # exist before the first one is created.
+          gh label create "${LABEL}" \
+            --description "Opened on a mirror and copied here" \
+            --color "ededed" --force >/dev/null
+
+          relayed=$(gh issue list --label "${LABEL}" --state all --limit 500 \
+            --json number,body,state)
+
+          created=0
+          closed=0
+          reopened=0
+          untouched=0
+
+          while IFS= read -r item; do
+            url=$(printf '%s' "${item}" | jq -r '.url')
+            origin=$(printf '%s' "${item}" | jq -r '.origin')
+            state=$(printf '%s' "${item}" | jq -r '.state')
+            marker="<!-- issue-pull:${url} -->"
+
+            existing=$(printf '%s' "${relayed}" | jq -c --arg m "${marker}" \
+              'map(select(.body != null and (.body | contains($m)))) | first // empty')
+
+            if [ -z "${existing}" ]; then
+              # Never seen it. Only worth relaying while it is still open --
+              # copying in an issue that was opened and resolved entirely on the
+              # mirror between two runs creates a closed issue nobody asked for.
+              if [ "${state}" != "open" ]; then
+                untouched=$((untouched + 1))
+                continue
+              fi
+
+              title=$(printf '%s' "${item}" | jq -r '.title')
+              author=$(printf '%s' "${item}" | jq -r '.author')
+              opened=$(printf '%s' "${item}" | jq -r '.opened')
+              body=$(printf '%s' "${item}" | jq -r '.body')
+
+              printf 'Opened by **%s** on %s, %s.\nOriginal: %s\n\n---\n\n%s\n\n%s\n' \
+                "${author}" "${origin}" "${opened}" "${url}" "${body}" "${marker}" >/tmp/relay-body.md
+
+              origin_label="${origin,,}"
+              gh label create "${origin_label}" --color "ededed" --force >/dev/null
+
+              gh issue create \
+                --title "${title}" \
+                --body-file /tmp/relay-body.md \
+                --label "${LABEL}" \
+                --label "${origin_label}" >/dev/null
+
+              echo "relayed ${url}"
+              created=$((created + 1))
+
+              continue
+            fi
+
+            number=$(printf '%s' "${existing}" | jq -r '.number')
+            here=$(printf '%s' "${existing}" | jq -r '.state' | tr '[:upper:]' '[:lower:]')
+
+            if [ "${state}" = "closed" ] && [ "${here}" = "open" ]; then
+              comments=$(printf '%s' "${item}" | jq -r '.comments')
+              opened=$(printf '%s' "${item}" | jq -r '.opened')
+              closed_at=$(printf '%s' "${item}" | jq -r '.closed')
+
+              # Both platforms answer ISO 8601, but with different offsets and
+              # fractional seconds -- `date -d` handles either.
+              days="?"
+              if [ -n "${closed_at}" ]; then
+                opened_epoch=$(date -d "${opened}" +%s)
+                closed_epoch=$(date -d "${closed_at}" +%s)
+                days=$(( (closed_epoch - opened_epoch) / 86400 ))
+              fi
+
+              gh issue comment "${number}" --body "$(printf \
+                'Closed on %s after %s comment(s), %s day(s) open.\n\nThe conversation happened at %s.' \
+                "${origin}" "${comments}" "${days}" "${url}")" >/dev/null
+
+              gh issue close "${number}" --reason completed >/dev/null
+
+              echo "closed #${number} (source ${url})"
+              closed=$((closed + 1))
+
+              continue
+            fi
+
+            if [ "${state}" = "open" ] && [ "${here}" = "closed" ]; then
+              gh issue reopen "${number}" >/dev/null
+              gh issue comment "${number}" --body "Reopened on ${origin}: ${url}" >/dev/null
+
+              echo "reopened #${number} (source ${url})"
+              reopened=$((reopened + 1))
+
+              continue
+            fi
+
+            untouched=$((untouched + 1))
+          done < <(printf '%s' "${foreign}" | jq -c '.[]')
+
+          echo "relay complete: created=${created} closed=${closed} reopened=${reopened} unchanged=${untouched}"
