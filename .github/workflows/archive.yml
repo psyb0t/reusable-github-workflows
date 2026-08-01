@@ -78,6 +78,12 @@ on:
         type: string
         default: "psyb0t-"
 
+      max_new_items_per_day:
+        description: "Ceiling on how many NEW archive.org items may be created in a day across this account. Creating an item is rate-limited far harder than uploading to one that exists -- a burst answers HTTP 503 SlowDown with 'appears to be spam' -- so past this count the job leaves the rest to the next scheduled run instead of hammering. Counted by asking archive.org, not by keeping a tally: a tally drifts the moment a run dies between uploading and recording it."
+        required: false
+        type: number
+        default: 10
+
       item_collection:
         description: "archive.org collection to file the item under. `opensource` is the open self-upload collection; anything else generally has to be granted."
         required: false
@@ -417,6 +423,9 @@ jobs:
           REF: ${{ github.ref_name }}
           PREFIX: ${{ inputs.item_identifier_prefix }}
           COLLECTION: ${{ inputs.item_collection }}
+          MAX_NEW_PER_DAY: ${{ inputs.max_new_items_per_day }}
+          PREFIX_QUERY: ${{ inputs.item_identifier_prefix }}
+          COMMIT: ${{ github.sha }}
           FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
           MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           BACKOFF: ${{ inputs.backoff_seconds }}
@@ -433,6 +442,46 @@ jobs:
 
           identifier="${PREFIX}${REPO}"
           echo "item: https://archive.org/details/${identifier}"
+
+          # The item's own metadata is the record of what was last uploaded, so
+          # there is nothing to keep in sync and nothing to go stale. A run that
+          # died mid-upload never wrote its revision, so the next run sees a
+          # mismatch and retries -- the ABSENCE of the revision is the failure
+          # record, which is why no separate retry flag exists.
+          state=$(curl -sS "https://archive.org/metadata/${identifier}" || echo '{}')
+          item_exists=$(printf '%s' "${state}" | jq -r 'if (.metadata // empty) then "yes" else "no" end')
+          uploaded_rev=$(printf '%s' "${state}" | jq -r '.metadata.sourcerevision // empty')
+
+          if [ "${uploaded_rev}" = "${COMMIT}" ]; then
+            echo "item already holds ${COMMIT}; nothing to upload"
+
+            exit 0
+          fi
+
+          # Only CREATION is throttled; uploading to an item that already exists
+          # is an ordinary PUT, so the budget gates the create path alone.
+          if [ "${item_exists}" != "yes" ]; then
+            today=$(date -u +%Y-%m-%d)
+            created_today=$(curl -sS --get "https://archive.org/advancedsearch.php" \
+              --data-urlencode "q=identifier:${PREFIX_QUERY}*" \
+              --data-urlencode "fl[]=addeddate" \
+              --data-urlencode "rows=500" \
+              --data-urlencode "output=json" \
+              | jq -r --arg d "${today}" \
+                '[.response.docs[]? | select((.addeddate // "") | startswith($d))] | length' \
+              || echo 0)
+
+            echo "${created_today} item(s) created today, ceiling is ${MAX_NEW_PER_DAY}"
+
+            # The search index lags by minutes, so this is a guard rail and not
+            # an exact count. Green, not red: there is nothing wrong here, the
+            # work simply belongs to a later run.
+            if [ "${created_today}" -ge "${MAX_NEW_PER_DAY}" ]; then
+              echo "::notice::daily new-item ceiling reached; leaving ${identifier} to the next scheduled run"
+
+              exit 0
+            fi
+          fi
 
           # One tarball rather than a file-per-request: a repo of any size would
           # otherwise be hundreds of round trips, and archive.org unpacks the
@@ -528,11 +577,13 @@ jobs:
                   --arg desc "${long_description}" \
                   --arg orig "https://github.com/${SOURCE}" \
                   --argjson subjects "$(printf '%s' "${meta}" | jq -c '.topics')" \
+                  --arg rev "${COMMIT}" \
                   '[
                     {op: "add", path: "/title",       value: $title},
                     {op: "add", path: "/description", value: $desc},
                     {op: "add", path: "/originalurl", value: $orig},
-                    {op: "add", path: "/subject",     value: $subjects}
+                    {op: "add", path: "/subject",     value: $subjects},
+                    {op: "add", path: "/sourcerevision", value: $rev}
                   ]')
 
                 if [ -n "${homepage}" ]; then
