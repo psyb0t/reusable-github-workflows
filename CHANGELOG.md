@@ -4,6 +4,21 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.33.1 — 2026-08-01
+
+Halves the daily ceiling on new archive.org items, from 10 to 5.
+
+- The ceiling is per **day**, but what it guards against is a **burst**: creating
+  roughly a dozen items inside an hour is what answers `503 SlowDown` with
+  "appears to be spam". Ten a day can still be ten inside ten minutes when
+  several repositories' schedules land together.
+- It is counted by querying archive.org rather than by keeping a tally, and that
+  search index lags by minutes — so the number actually in flight can exceed the
+  ceiling before the count catches up. Five leaves margin for both.
+- Nothing is lost by going slower. An item created a day later is still the same
+  item, and `sourcerevision` means a repository whose tree has not changed
+  uploads nothing at all, so the steady-state request volume is unaffected.
+
 ## v0.33.0 — 2026-08-01
 
 Mirrors stop pretending to accept contributions, issues opened on them come back
