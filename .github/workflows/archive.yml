@@ -201,8 +201,22 @@ jobs:
                       return 0
                     fi
 
-                    # 200 with no job_id means it answered with a message
-                    # instead -- a refusal in disguise.
+                    local refusal
+                    refusal=$(printf '%s' "${body}" | jq -r '.status_ext // empty' 2>/dev/null || true)
+
+                    # Save Page Now caps captures PER URL PER DAY (5 at the time
+                    # of writing) separately from the account's daily quota.
+                    # Hitting it means this page has already been archived
+                    # several times today, which is the outcome this job wants --
+                    # failing the run over it would report "not archived" about a
+                    # URL that is, repeatedly.
+                    if [ "${refusal}" = "error:too-many-daily-captures" ]; then
+                      echo "::notice::${url} already hit Wayback's per-URL daily capture cap; today's snapshots stand"
+
+                      return 0
+                    fi
+
+                    # Any other 200 without a job_id is a refusal in disguise.
                     echo "::warning::Wayback accepted the request but returned no job: ${body}"
 
                     return 1
