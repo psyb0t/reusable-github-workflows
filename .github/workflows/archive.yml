@@ -516,6 +516,56 @@ jobs:
                 echo "uploaded on attempt ${attempt}"
                 echo "https://archive.org/details/${identifier}" >> "${GITHUB_STEP_SUMMARY}"
 
+                # The x-archive-meta-* headers above are honoured ONLY when the
+                # item is created. On every later upload they are accepted and
+                # ignored, so without this the description, topics and licence
+                # would be frozen at whatever they were the day the item first
+                # went up. The metadata API is the only way to move them after
+                # that, so it runs every time rather than only on changes --
+                # cheaper than working out whether anything drifted.
+                patch=$(jq -nc \
+                  --arg title "${SOURCE}" \
+                  --arg desc "${long_description}" \
+                  --arg orig "https://github.com/${SOURCE}" \
+                  --argjson subjects "$(printf '%s' "${meta}" | jq -c '.topics')" \
+                  '[
+                    {op: "add", path: "/title",       value: $title},
+                    {op: "add", path: "/description", value: $desc},
+                    {op: "add", path: "/originalurl", value: $orig},
+                    {op: "add", path: "/subject",     value: $subjects}
+                  ]')
+
+                if [ -n "${homepage}" ]; then
+                  patch=$(printf '%s' "${patch}" | jq -c --arg h "${homepage}" \
+                    '. + [{op: "add", path: "/homepage", value: $h}]')
+                fi
+
+                if [ -n "${license}" ] && [ "${license}" != "NOASSERTION" ]; then
+                  patch=$(printf '%s' "${patch}" | jq -c --arg l "${license}" '
+                    . + [
+                      {op: "add", path: "/licenseurl",
+                       value: ("https://spdx.org/licenses/" + $l + ".html")},
+                      {op: "add", path: "/rights",
+                       value: ($l + " License. See https://spdx.org/licenses/" + $l + ".html")}
+                    ]')
+                fi
+
+                # Body on stdin, never on the command line: the keys would
+                # otherwise sit in this process's argv for anything on the
+                # runner to read.
+                if meta_out=$(printf 'target=metadata&patch=%s&access=%s&secret=%s' \
+                  "$(jq -rn --arg v "${patch}" '$v|@uri')" "${ACCESS_KEY}" "${SECRET_KEY}" \
+                  | curl -sS -X POST --data @- "https://archive.org/metadata/${identifier}"); then
+
+                  if printf '%s' "${meta_out}" | jq -e '.success' >/dev/null 2>&1; then
+                    echo "metadata synced"
+                  else
+                    echo "::warning::metadata sync refused: ${meta_out}"
+                  fi
+                else
+                  echo "::warning::metadata sync request failed"
+                fi
+
                 exit 0
               fi
             else
