@@ -74,6 +74,8 @@ concurrency:
   group: create-badges-${{ github.repository }}-${{ inputs.badges_branch }}
   cancel-in-progress: false
 
+permissions: {}
+
 jobs:
   create-badges:
     name: Create Badges

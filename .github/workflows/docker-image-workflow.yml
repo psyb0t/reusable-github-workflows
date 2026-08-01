@@ -10,7 +10,12 @@ on:
 
       target_platforms:
         description: "Target platforms"
-        required: true
+        # Not required: it has a default, and an input that is both required and
+        # defaulted can never fall back to that default. Every current caller
+        # passes it explicitly, so nothing changes for them -- but a new caller
+        # can now omit it and get amd64 + arm64, which is what the default was
+        # always there to say.
+        required: false
         type: string
         default: "linux/amd64,linux/arm64"
 
@@ -74,6 +79,8 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions: {}
 
 jobs:
   # ══════════════════════════════════════════════

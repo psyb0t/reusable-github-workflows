@@ -34,6 +34,8 @@ concurrency:
   group: collaborators-only-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   check-collaborator:
     name: Check Collaborator

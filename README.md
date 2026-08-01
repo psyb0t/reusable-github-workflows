@@ -22,6 +22,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
   - [create-badges.yml](#create-badgesyml)
   - [git-mirror.yml](#git-mirroryml)
+  - [issue-pull.yml](#issue-pullyml)
   - [archive.yml](#archiveyml)
 - [License](#license)
 
@@ -49,7 +50,8 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
-| [`archive.yml`](#archiveyml) | Push the repo into the Wayback Machine (pages) and Software Heritage (git history). No API keys, best effort. |
+| [`issue-pull.yml`](#issue-pullyml) | Copy issues opened on the Codeberg / GitLab mirrors into GitHub, and close the copy when the original closes. |
+| [`archive.yml`](#archiveyml) | Push the repo into the Wayback Machine (pages), Software Heritage (git history) and archive.org (a browsable item of the source itself). |
 
 ## Pinning
 
@@ -75,6 +77,7 @@ Closes (and optionally locks) any PR whose author is not a collaborator on the r
 |---|---|---|---|
 | `close_message` | string | `"This repository does not accept external pull requests. Please open an issue instead."` | Comment posted when an unauthorized PR is closed. |
 | `lock` | boolean | `true` | Lock the PR conversation after closing. |
+| `allow_authors` | string | `dependabot[bot],dependabot-preview[bot]` | Comma-separated PR author logins that bypass the collaborator check. For trusted bots whose PRs are meant to be reviewed and merged — closing one is also a dead notification path, since a bot-opened, bot-closed PR pings nobody and just vanishes into the Closed tab. |
 
 ### Example
 
@@ -557,14 +560,14 @@ Then embed in the README (raw, GitHub-hosted, no external service):
 
 Push-mirrors the caller repo to Codeberg, GitLab and/or Gitee the moment you push to GitHub, creating the destination repo if it doesn't exist yet and syncing the GitHub description (plus topics and the project URL, where the platform has them). Every target is opt-in and runs as its own job with no `needs` between them, so enabling a second platform can't break the first, and a bad token on one doesn't hold up the others.
 
-The mirror is one-way and authoritative. `--force` means anything pushed directly to a target that GitHub doesn't have is overwritten, and `prune: true` (the default) deletes refs there that no longer exist here — so the copies stay byte-identical to GitHub. Set `prune: false` if you'd rather stale branches linger than vanish. These are read-only mirrors; don't accept contributions on them.
+The mirror is one-way and authoritative. `--force` means anything pushed directly to a target that GitHub doesn't have is overwritten, and `prune: true` (the default) deletes refs there that no longer exist here — so the copies stay byte-identical to GitHub. Set `prune: false` if you'd rather stale branches linger than vanish. These are read-only mirrors, and `disable_pull_requests` (default `true`) makes that structural rather than a request: the pull/merge request feature is switched off on Codeberg and GitLab. A PR merged on a mirror is destroyed by the very next force-push, and unlike GitHub — where a workflow can close one with an explanation — neither platform can refuse it, so the honest move is to remove the button and let a contributor find out *before* writing the patch. Issues stay enabled, and so does forking; see [`issue-pull.yml`](#issue-pullyml) for getting those issues back.
 
 Two implementation details are deliberate and worth knowing before you copy the pattern elsewhere:
 
 - **It bare-clones the source instead of `actions/checkout` + `git push --all`.** A checkout creates exactly ONE local branch — every other branch stays a remote-tracking ref — so `--all` silently mirrors a single branch and quietly drops the rest. The bare clone carries all heads and tags, and the push uses explicit `+refs/heads/*` / `+refs/tags/*` refspecs.
 - **Every API call uses `curl --fail-with-body`, and the response body ends up in the error annotation.** Plain `curl -s` exits 0 on 401 / 404 / 500, so `set -euo pipefail` does *not* catch a revoked token or a missing scope — the step would go green having synced nothing. Discarding the body with `-o /dev/null` is almost as bad: the first live failure reported nothing but `curl: (22) ... error: 422`, with the message explaining it thrown away.
 
-The synced description is prefixed with `[mirror] ` so a visitor landing on a copy can tell it's one, and capped at `description_max_length`, cut to end in `...` when it would exceed that. **The cap is in characters, not bytes** — GitLab and Gitee both reject anything past 2000 and Gitee states its limit that way (`最长为 2000 个字符`), so the truncation runs through `jq`, which counts codepoints. Bash's `${#var}` counts bytes and would cut a description containing any multi-byte character short of the real limit.
+The synced description is prefixed with `description_prefix` (empty by default) and capped at `description_max_length`, cut to end in `...` when it would exceed that. **The cap is in characters, not bytes** — GitLab and Gitee both reject anything past 2000 and Gitee states its limit that way (`最长为 2000 个字符`), so the truncation runs through `jq`, which counts codepoints. Bash's `${#var}` counts bytes and would cut a description containing any multi-byte character short of the real limit.
 
 Pushing a commit and its tag together starts two runs about a second apart, so runs are serialized per caller repository (without `cancel-in-progress` — each one carries a real ref that still has to reach the targets). Repo creation tolerates losing that race anyway: on a failed create it re-checks existence and continues if the repo is there.
 
@@ -597,7 +600,8 @@ The job therefore strips **every** protected-branch rule from the target after e
 | `gitee_enabled` | `false` | Mirror to Gitee. |
 | `create_missing` | `true` | Create the repo on the target when it doesn't exist yet. |
 | `sync_metadata` | `true` | Sync the GitHub description (and topics / project URL, where supported). |
-| `description_prefix` | `[mirror] ` | Prepended to the synced description so a visitor can tell a copy from the original. Empty string disables it. |
+| `description_prefix` | `""` | Prepended to the synced description. Empty by default. |
+| `disable_pull_requests` | `true` | Turn the pull/merge request feature OFF on the mirror. Issues and forking stay on. |
 | `description_max_length` | `2000` | Cap on the synced description, in **characters**. Over it, the text is cut and ends in `...`. |
 | `prune` | `true` | Delete refs on the target that no longer exist here. |
 | `max_attempts` | `3` | Attempts per network operation (the bare clone and the force push), including the first. |
@@ -643,17 +647,89 @@ jobs:
       gitee_token: ${{ secrets.GITEE_TOKEN }}
 ```
 
+## issue-pull.yml
+
+Copies issues opened on the Codeberg and GitLab mirrors into GitHub, so the mirrors can carry a conversation without anyone having to watch them. [`git-mirror.yml`](#git-mirroryml) turns pull requests **off** on those copies but leaves issues on — this is the other half of that decision: issues are the one thing a visitor who finds the project on a mirror can still open, and without this they'd sit there unread forever.
+
+**Direction is the whole design.** It only ever READS the mirrors and WRITES here, so no GitHub credential ever leaves the runner. The relayed issue is opened with the built-in `GITHUB_TOKEN`, scoped to the one repo and expired when the job ends. The alternative — a bot on Codeberg pushing into GitHub — needs a GitHub PAT stored on a third-party forge, fired by untrusted contributor input. That's the same footgun `collaborators-only-workflow.yml` exists to avoid, and pulling instead of pushing removes it entirely.
+
+**The relayed issue is authored by `github-actions[bot]`, never by you.** An issue that claims to be written by you but wasn't is a lie you have to live with forever, and you'd get notified about something "you" wrote. The real author, timestamp and a link to the original go in the body instead. A bot-authored issue also doesn't re-trigger workflows, so there's no loop to guard against.
+
+**State lives in the relayed issues themselves.** Each carries an invisible marker comment holding its source URL, and that's what the next run diffs against — so there's no cache to evict, no state file to corrupt, and a run that dies halfway simply picks up where it left off. Same principle as the `sourcerevision` check in [`archive.yml`](#archiveyml): ask the thing you actually care about instead of remembering.
+
+What propagates, and what deliberately doesn't:
+
+| | |
+|---|---|
+| Issue opened on a mirror | → opened here, labelled `relayed` + `codeberg`/`gitlab` |
+| Issue closed on a mirror | → closed here, with a note saying where it was closed, how many comments it drew and how long it was open |
+| Issue reopened on a mirror | → reopened here |
+| Comments, reviews, labels | **not synced** — one-way, open/close/reopen only. Two-way comment sync is a product, not a workflow; the original is one click away in the body. |
+
+**Reading public issues needs no token at all.** The mirror tokens are optional and only raise the rate limit — and an *under-scoped* one is worse than none, because it turns a request that would have succeeded anonymously into a `403`. So every authenticated read falls back to an anonymous one and warns, rather than skipping that platform for the run.
+
+**Jitter, not just a staggered cron.** GitHub fires a whole account's crons together, so N repos on the same 6-hourly schedule is one thundering herd per platform, forever. `jitter_seconds` (default 600) sleeps a random moment before the first request. Only the cron needs it — a manual run is one repo triggered by one person who's waiting for it, so callers should pass `0` for anything else.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `codeberg_enabled` | `true` | Pull issues from the Codeberg mirror. |
+| `gitlab_enabled` | `true` | Pull issues from the GitLab mirror. |
+| `codeberg_url` | `https://codeberg.org` | Base URL of the Codeberg/Gitea instance. |
+| `target_owner` | `""` | Owner on Codeberg + GitLab. Defaults to this repo's owner. |
+| `jitter_seconds` | `600` | Upper bound on a random delay before the first request. |
+| `label` | `relayed` | Label put on every relayed issue — and the query that finds them again, so changing it orphans everything relayed under the old one. |
+| `runs_on` | `ubuntu-latest` | Runner to use. |
+
+### Secrets
+
+Both optional; public issues read fine without them.
+
+| Secret | Description |
+|---|---|
+| `codeberg_token` | Raises the Codeberg rate limit. |
+| `gitlab_token` | Raises the GitLab rate limit. |
+
+### Example
+
+```yaml
+name: issue-pull
+
+on:
+  schedule:
+    # Stagger the minute per repo; the job jitters on top of it.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  issue-pull:
+    permissions:
+      issues: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/issue-pull.yml@master
+    with:
+      jitter_seconds: ${{ github.event_name == 'schedule' && 600 || 0 }}
+    secrets:
+      codeberg_token: ${{ secrets.CODEBERG_TOKEN }}
+      gitlab_token: ${{ secrets.GITLAB_TOKEN }}
+```
+
+The caller job needs `permissions: issues: write` — the workflow can't grant itself more than the caller has.
+
 ## archive.yml
 
-Pushes the caller repo into public archives so it survives the platform it lives on. Two targets, covering two different failure modes:
+Pushes the caller repo into public archives so it survives the platform it lives on. Three targets, covering three different failure modes:
 
 - **Wayback Machine** archives the rendered **page** — your README as HTML, and the project homepage. Good against link rot, useless if what you need back is the code.
 - **Software Heritage** archives the **git object graph** — every commit and every blob, git-native. This is the one that matters if a host disappears entirely. It's the archive academic citations point at, run by Inria under a UNESCO mandate.
+- **archive.org item** archives the **working tree itself** as a page a person can land on, read and download — description, topics, licence and links back to the repo and project page attached as real metadata. The other two keep the code or keep the page; neither gives you something browsable. Requires the archive.org key pair.
 
-**Neither needs an API key**, and neither pulls in a third-party action — both are plain `curl`, so there's no marketplace action to SHA-pin and no supply-chain surface. Both services are anonymous-friendly and *rate-limited* rather than gated, which drives the two design decisions here:
+**The first two need no API key**, and neither pulls in a third-party action — both are plain `curl`, so there's no marketplace action to SHA-pin and no supply-chain surface. Both services are anonymous-friendly and *rate-limited* rather than gated, which drives the two design decisions here:
 
-- **Every request retries with exponential backoff**, because the expected failure is "too many requests right now", not "no". `max_attempts` (default 3) with `backoff_seconds` (default 10) gives 10s then 20s between tries. Only a `429`, a `5xx`, or a timeout is retried — any other `4xx` means the URL itself is unacceptable and waiting won't change that answer, so it gives up immediately rather than burning the backoff.
+- **Every request retries with exponential backoff**, because the expected failure is "too many requests right now", not "no". `max_attempts` (default 5) with `backoff_seconds` (default 30) gives 30s, 60s, 120s, 240s between tries — about seven minutes of patience. That figure is sized to a real constraint: an archive.org account gets **three concurrent Save Page Now sessions**, so several repositories archiving at once queue behind each other and answer `429` until one frees up. The previous 3 × 10s gave up while the queue was still draining. Only a `429`, a `404`, a `5xx`, or a timeout is retried — any other `4xx` means the URL itself is unacceptable and waiting won't change that answer. **`404` is in that set** even though it normally means "gone": Save Page Now answers `404` when it's under load and abandons the fetch, and the URL passed here is always the caller's own page, which exists.
 - **If it still can't archive after all that, the job goes red.** A green run that archived nothing is a lie. Going red costs nothing here because the job is deliberately independent — nothing `needs:` it, so it reports the truth without blocking the release or any other job. Set `fail_on_error: false` if you'd rather not see it.
+
+**Save Page Now caps captures per URL per day** — five, currently — separately from the account's daily quota, which can be almost untouched while this one refuses. It answers HTTP 200 with no job id and `status_ext=error:too-many-daily-captures`. That counts as archived, because it is: the snapshots exist and another would add nothing. Every *other* jobless 200 is a real refusal and still fails.
 
 **Wayback is slow** — a single save measured **~110 seconds** — hence the generous `url_timeout_seconds` (default 180) and a deliberately short URL list rather than every page. A timeout is *not* treated as a refusal: Wayback frequently finishes the save after the client has given up, so a retry there is a second chance, not a correction.
 
@@ -663,7 +739,16 @@ By default it archives the repo's GitHub page plus the URL set as the repo's hom
 
 The reason is that outlink capture only exists on the authenticated Save Page Now v2 API — an unauthenticated `POST https://web.archive.org/save` answers `You need to be logged in to use Save Page Now` even for a plain save with no options at all. The keyless `GET /save/<url>` this workflow falls back to is an older path that takes no options.
 
-Generate an S3-style key pair at [archive.org/account/s3.php](https://archive.org/account/s3.php) and pass them as `wayback_access_key` / `wayback_secret_key`. With them the job switches to the v2 API and `capture_outlinks` (default `true`) and `capture_screenshot` (default `false`) start working. Without them everything still runs and the job emits a warning, so the gap is visible instead of silent.
+Generate an S3 key pair at [archive.org/account/s3.php](https://archive.org/account/s3.php) and pass them as `archiveorg_access_key` / `archiveorg_secret_key`. They're named for the **account**, not for one caller: the same two values sign Save Page Now, the S3 upload API and the metadata API alike. With them the job switches to the v2 API and `capture_outlinks` (default `true`) and `capture_screenshot` (default `false`) start working. Without them everything still runs and the job emits a warning, so the gap is visible instead of silent.
+
+**The archive.org item is the one you can actually browse.** It uploads the working tree as a single tarball — one request rather than hundreds — which archive.org unpacks on its side, and attaches the GitHub description, topics, licence and links back to both the repo and the project page. `.git` is excluded: Software Heritage already holds the history, and duplicating it here is bulk with no benefit.
+
+Two things about it are worth understanding before you enable it elsewhere:
+
+- **It skips when nothing changed.** The item records the source commit as `sourcerevision`, and a run whose HEAD already matches it uploads nothing. Without that, a README typo re-ships the entire tree. This also gives retry-on-schedule for free: a run that died mid-upload never wrote its revision, so the next one sees a mismatch and tries again. **The absence of the revision is the failure record** — there is no retry flag because none is needed.
+- **Creating an item is rate-limited far harder than uploading to one.** A burst of new items answers `503 SlowDown` with *"appears to be spam"*. So `max_new_items_per_day` (default 10) caps creation, counted by **asking archive.org** how many items with your prefix are dated today — not by keeping a tally. A tally drifts the moment a run dies between doing the work and recording it, and there's nowhere to keep one anyway: Actions caches are repo-scoped and evictable, and account-level variables don't exist outside an organisation. Over the cap the job exits **green** — nothing is wrong, the work simply belongs to a later run. Uploads to an item that already exists are ordinary PUTs and never gated.
+
+`item_identifier_prefix` (default `psyb0t-`) is not decoration. **archive.org identifiers are global and permanent**; claiming an unprefixed one is a landgrab that eventually collides with someone else's project of the same name.
 
 ### Inputs
 
@@ -675,20 +760,24 @@ Generate an S3-style key pair at [archive.org/account/s3.php](https://archive.or
 | `extra_urls` | `""` | Additional URLs to archive, one per line. |
 | `capture_outlinks` | `true` | Also archive every page the archived page links to. **Requires the archive.org key secrets** — silently ignored without them. |
 | `capture_screenshot` | `false` | Also store a screenshot of each page. Same key requirement. |
+| `item_upload_enabled` | `true` | Upload the working tree to archive.org as a browsable item. Needs the key pair. |
+| `item_identifier_prefix` | `psyb0t-` | Prefixed to the repo name to form the archive.org identifier. Identifiers are global and permanent. |
+| `max_new_items_per_day` | `10` | Ceiling on NEW items created per day across the account. Over it the job exits green and leaves the rest to a later run. |
+| `item_collection` | `opensource` | archive.org collection to file the item under. |
 | `fail_on_error` | `true` | Fail the job when a request is still refused after every retry — a green run that archived nothing is a lie. Nothing `needs:` this job, so red here blocks nothing. |
-| `max_attempts` | `3` | Attempts per request, including the first. |
-| `backoff_seconds` | `10` | Base delay between attempts; doubles each retry. |
+| `max_attempts` | `5` | Attempts per request, including the first. |
+| `backoff_seconds` | `30` | Base delay between attempts; doubles each retry. |
 | `url_timeout_seconds` | `180` | Per-URL budget for a Wayback save. |
 | `runs_on` | `ubuntu-latest` | Runner to use. |
 
 ### Secrets
 
-Both optional. Without them the job still runs, using the keyless save.
+Both optional. Without them the Wayback and Software Heritage jobs still run using the keyless save; the item upload skips with a warning.
 
 | Secret | Description |
 |---|---|
-| `wayback_access_key` | archive.org S3-style access key, from [archive.org/account/s3.php](https://archive.org/account/s3.php). Needed for `capture_outlinks` / `capture_screenshot`. |
-| `wayback_secret_key` | The paired secret key. |
+| `archiveorg_access_key` | archive.org S3 access key, from [archive.org/account/s3.php](https://archive.org/account/s3.php). An **account** credential — the same pair signs Save Page Now, the S3 upload API and the metadata API. Needed for `capture_outlinks`, `capture_screenshot` and the item upload. |
+| `archiveorg_secret_key` | The paired secret key. |
 
 ### Example
 
@@ -708,15 +797,15 @@ jobs:
         https://example.com/docs/my-project
 ```
 
-With keys — additionally sweeps in every page the archived pages link to:
+With keys — additionally sweeps in every page the archived pages link to, and publishes the source as a browsable archive.org item:
 
 ```yaml
 jobs:
   archive:
     uses: psyb0t/reusable-github-workflows/.github/workflows/archive.yml@master
     secrets:
-      wayback_access_key: ${{ secrets.WAYBACK_ACCESS_KEY }}
-      wayback_secret_key: ${{ secrets.WAYBACK_SECRET_KEY }}
+      archiveorg_access_key: ${{ secrets.ARCHIVEORG_ACCESS_KEY }}
+      archiveorg_secret_key: ${{ secrets.ARCHIVEORG_SECRET_KEY }}
 ```
 
 ## License
