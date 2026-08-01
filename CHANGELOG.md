@@ -4,6 +4,31 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.34.0 — 2026-08-01
+
+Lets a caller suppress a CVE it has assessed, with the assessment written down.
+
+- **New `scan_vex_file` on `docker-image-workflow.yml`** — a path in the repo to
+  an [OpenVEX](https://openvex.dev) document, passed to Grype as `--vex`. An
+  image on any real base carries upstream CVEs in code it never executes; the
+  usual answer is an ignore list, which reads identically to having stopped
+  looking. An OpenVEX statement names the CVE, asserts `not_affected`, and
+  carries both a machine-readable justification and a human impact statement, in
+  a file that gets reviewed like any other.
+- **New `scan_only_fixed`** — pass `--only-fixed`, reporting only vulnerabilities
+  with a published fix. Off by default: it is honest triage for a base image and
+  it also hides genuinely unfixed problems.
+- Both were already supported by the pinned `anchore/scan-action`; nothing here
+  changes the scanner, it connects inputs that were never wired.
+- **A VEX-suppressed finding leaves the Security tab too**, not just the build
+  result. That is the intent, and it is also why a wrong assertion hides a real
+  vulnerability with nothing left in the UI to catch it. Documented at the input
+  and in the README.
+- The scan jobs now grant `contents: read` and check the repository out **only**
+  when `scan_vex_file` is set. Without that the VEX path resolved to nothing on a
+  runner that had never cloned the repo, and Grype would have carried on
+  suppressing nothing at all — a silent no-op rather than an error.
+
 ## v0.33.1 — 2026-08-01
 
 Halves the daily ceiling on new archive.org items, from 10 to 5.

@@ -108,6 +108,33 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 
 Trigger from `push` so it fires on branch and tag pushes. The workflow itself only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*` — pushes to other branches do nothing.
 
+**Suppressing a CVE you have actually assessed — `scan_vex_file`.** An image on a real base carries upstream CVEs in code it never executes. A blanket ignore list is the wrong answer to that, because it reads identically to "we stopped looking". An [OpenVEX](https://openvex.dev) document is the right one: it names the CVE, states `not_affected`, gives a machine-readable justification (`vulnerable_code_not_in_execute_path` and friends) plus a human impact statement, and lives in the repo where it gets reviewed like any other file.
+
+```yaml
+with:
+  scan_vex_file: security/myimage-cpython.openvex.json
+  scan_only_fixed: true
+```
+
+```json
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements": [
+    {
+      "vulnerability": { "name": "CVE-2026-11940" },
+      "products": [{ "@id": "pkg:generic/python@3.14.6" }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "This service accepts no archive input and its source has no tarfile import or call path."
+    }
+  ]
+}
+```
+
+**A VEX-suppressed finding leaves the Security tab as well as the build result.** That is the point of it — but it also means a wrong assertion hides a real vulnerability with nothing left in the UI to notice. One statement per CVE, with the impact statement spelling out why the code is unreachable, reviewed like code. `scan_only_fixed` is the blunter companion: it hides everything with no published fix, which is honest triage for a base image and also hides genuinely unfixed problems.
+
+Setting `scan_vex_file` makes the scan job check the repository out — it otherwise needs nothing from it, only the pushed image — so that job grants `contents: read`.
+
 ### Inputs
 
 | Input | Type | Default | Description |
@@ -118,6 +145,8 @@ Trigger from `push` so it fires on branch and tag pushes. The workflow itself on
 | `scan_enabled` | boolean | `true` | Run Grype scan against the pushed image + upload SARIF to the Security tab. |
 | `scan_severity` | string | `"medium"` | Grype severity threshold to fail on: `negligible`, `low`, `medium`, `high`, `critical`. |
 | `scan_fail_build` | boolean | `false` | Fail the run on a finding at/above `scan_severity`. Off by default — upstream CVEs are continuous and mostly unfixable, so failing on them makes the pipeline permanently red for no signal; findings still reach the Security tab. Set `true` where a vuln must block the release. Populating the Security tab needs `permissions: security-events: write` on the caller job. |
+| `scan_vex_file` | string | `""` | Path in the repo to an [OpenVEX](https://openvex.dev) document, passed to Grype as `--vex`. For a CVE you have **assessed** as not affecting this image. See below — suppressed findings leave the Security tab too. |
+| `scan_only_fixed` | boolean | `false` | Only report vulnerabilities that have a fix available. |
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `free_disk_space` | boolean | `true` | Free ~25-30 GB before build (Android SDK, .NET, Haskell, large apt packages, preloaded docker images). **Disable for self-hosted runners** — wipes shared host directories. |

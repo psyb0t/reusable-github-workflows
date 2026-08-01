@@ -43,6 +43,18 @@ on:
         type: boolean
         default: false
 
+      scan_vex_file:
+        description: "Path in the repo to an OpenVEX document, passed to Grype as --vex. Use it to record a CVE you have ASSESSED as not affecting this image -- a stdlib CVE in a code path the application never reaches, say -- with the justification and impact statement written down next to the assertion. That is the difference between this and a blanket ignore list: an OpenVEX statement says WHY, is machine-readable, ships in the repo, and can be reviewed like any other file. Findings it suppresses stop failing the build AND stop appearing in the Security tab, so a wrong assertion hides a real vulnerability -- write them one CVE at a time."
+        required: false
+        type: string
+        default: ""
+
+      scan_only_fixed:
+        description: "Only report vulnerabilities that have a fix available. An image on any real base carries upstream CVEs with no patch published, which nobody can act on; hiding them makes the remaining findings a to-do list rather than weather. Off by default because it also hides genuinely unfixed problems -- turn it on where the scan is expected to gate a release."
+        required: false
+        type: boolean
+        default: false
+
       cache_mode:
         description: "Buildx cache mode (max caches all layers, min caches final only). Cache export is best-effort and never blocks image publication."
         required: false
@@ -171,8 +183,16 @@ jobs:
     if: always() && needs.build.result == 'success' && inputs.build_targets == '' && inputs.scan_enabled
     runs-on: ${{ inputs.runs_on }}
     permissions:
+      contents: read # check the VEX document out, when the caller passes one
       security-events: write # upload the Grype SARIF to the repo Security tab
     steps:
+      # Only when a VEX document is in play. The scan otherwise needs nothing
+      # from the repo -- it pulls the pushed image -- so checking out
+      # unconditionally would cost every caller a clone for no reason.
+      - name: Check out the VEX document
+        if: inputs.scan_vex_file != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Scan pushed image with Grype
         id: scan
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
@@ -180,6 +200,8 @@ jobs:
           image: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
           fail-build: ${{ inputs.scan_fail_build }}
           severity-cutoff: ${{ inputs.scan_severity }}
+          vex: ${{ inputs.scan_vex_file }}
+          only-fixed: ${{ inputs.scan_only_fixed }}
           output-format: sarif
 
       # Publish findings to Security > Code scanning, even when the scan step
@@ -391,11 +413,17 @@ jobs:
     if: always() && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped') && inputs.build_targets != '' && inputs.scan_enabled
     runs-on: ${{ inputs.runs_on }}
     permissions:
+      contents: read # check the VEX document out, when the caller passes one
       security-events: write # upload the Grype SARIF to the repo Security tab
     strategy:
       matrix:
         include: ${{ fromJson(inputs.build_targets) }}
     steps:
+      # See the single-image scan job: checkout only when a VEX path needs it.
+      - name: Check out the VEX document
+        if: inputs.scan_vex_file != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Scan pushed image with Grype
         id: scan
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
@@ -403,6 +431,8 @@ jobs:
           image: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix }}
           fail-build: ${{ inputs.scan_fail_build }}
           severity-cutoff: ${{ inputs.scan_severity }}
+          vex: ${{ inputs.scan_vex_file }}
+          only-fixed: ${{ inputs.scan_only_fixed }}
           output-format: sarif
 
       # Per-image category so each matrix target's SARIF is tracked separately
