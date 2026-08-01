@@ -4,6 +4,91 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.33.0 — 2026-08-01
+
+Mirrors stop pretending to accept contributions, issues opened on them come back
+here, and the repository itself gets archived somewhere a person can read it.
+
+- **Breaking. `archive.yml`'s secrets are renamed** `wayback_access_key` →
+  `archiveorg_access_key` and `wayback_secret_key` → `archiveorg_secret_key`.
+  The old names described one caller; the pair is an account credential that
+  signs Save Page Now, the S3 upload API and the metadata API alike, and naming
+  it after Wayback made every other use look like it needed its own key. Callers
+  passing the old names get an "invalid secret" startup failure — rename them:
+
+  ```yaml
+  secrets:
+    archiveorg_access_key: ${{ secrets.ARCHIVEORG_ACCESS_KEY }}
+    archiveorg_secret_key: ${{ secrets.ARCHIVEORG_SECRET_KEY }}
+  ```
+
+- **New `issue-pull.yml`** copies issues opened on the Codeberg and GitLab
+  mirrors into GitHub, and closes the copy when the original closes — with a
+  note saying where it was closed, how many comments it drew and how long it was
+  open. Reopening propagates too. It only ever READS the mirrors and WRITES
+  here, so no GitHub credential leaves the runner: relayed issues are opened
+  with the built-in `GITHUB_TOKEN`. They are authored by `github-actions[bot]`,
+  never the repo owner, and each carries a marker holding its source URL — that
+  marker is the only state, so there is no cache to evict and an interrupted run
+  resumes by simply running again. Comments are deliberately not synced.
+
+- **`git-mirror.yml` turns pull requests off on the mirrors**, via the new
+  `disable_pull_requests` input (default `true`). A mirror is force-pushed from
+  its source, so anything merged on one is destroyed by the next sync. GitHub
+  can leave a PR open and close it with an explanation; Codeberg and GitLab
+  cannot refuse one, so the honest equivalent is removing the button — a
+  contributor finds out before writing the patch rather than after. Issues stay
+  enabled, and so does forking. Pair it with `issue-pull.yml`.
+
+- **`archive.yml` uploads the repository to archive.org as an item of its own**,
+  behind `item_upload_enabled` (default `true`). The Wayback Machine keeps the
+  rendered page and Software Heritage keeps the git object graph; neither gives
+  you a page a person can land on, read and download. This uploads the working
+  tree with the description, topics, licence and links back to the repository
+  and project page attached as real metadata. Two things make it cheap:
+  it records the source commit as `sourcerevision` and skips entirely when HEAD
+  already matches, and `max_new_items_per_day` (default 10) caps item creation,
+  counted by asking archive.org rather than keeping a tally. Over the cap the
+  job exits green — the work belongs to a later run.
+
+- **Breaking-ish. `git-mirror.yml`'s `description_prefix` now defaults to empty**
+  (was `"[mirror] "`). Mirrors that cannot accept pull requests do not also need
+  their description shouting that they are copies. Set it explicitly to keep the
+  old behaviour.
+
+- **Fixed: `archive.yml` gave up on Save Page Now far too early.** Three
+  failures compounded. A `404` was treated as terminal, but Save Page Now
+  answers `404` when it is under load and abandons the fetch — and the URL is
+  always the caller's own page, which exists. The per-URL daily capture cap
+  (five, currently) arrives as HTTP 200 with `status_ext=error:too-many-daily-captures`
+  and was read as "not archived", failing a run about a page archived five times
+  that day. And the retry budget was 3 attempts on a 10s base, about 30 seconds,
+  while an account's three concurrent Save Page Now sessions mean a queue that
+  takes minutes to drain. Now: `404` retries, hitting the cap counts as
+  archived, and the budget is 5 attempts on a 30s base — roughly seven minutes.
+
+- **Fixed: item metadata was frozen at creation.** The `x-archive-meta-*`
+  headers only apply when an item is created; every later upload accepts and
+  ignores them, so a description would have drifted from the repository forever.
+  Metadata now syncs through the archive.org metadata API on every upload.
+
+- **Fixed: `docker-image-workflow.yml`'s `target_platforms` was `required: true`
+  with a default**, so the default could never apply. It is optional now, which
+  is what having a default meant. Existing callers pass it explicitly and are
+  unaffected.
+
+- **Five workflows gained a top-level `permissions: {}`** —
+  `collaborators-only-workflow.yml`, `create-badges.yml`,
+  `docker-image-workflow.yml`, `go-workflow.yml`,
+  `python-package-workflow.yml`. Every job in them already declared its own, so
+  this is defence in depth: a job added later without one would otherwise
+  inherit the caller's.
+
+- **README rewritten against the code.** Every input and secret in every
+  workflow is now verified to appear with its actual default. It previously
+  documented the old archive.org secret names, so copying an example produced a
+  caller that fails.
+
 ## v0.32.2 — 2026-07-31
 
 **Fixes `pip-audit` failing on every release.** Any repo calling
