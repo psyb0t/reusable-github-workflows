@@ -112,16 +112,38 @@ jobs:
           #   {origin, url, title, body, author, state, comments, opened, closed}
           foreign='[]'
 
+          # These issues are public, so the token buys nothing but a higher rate
+          # limit -- and an under-scoped one is WORSE than none, because it turns
+          # a request that would have succeeded anonymously into a 403. So every
+          # authenticated read falls back to an anonymous one rather than giving
+          # up on the platform for that run.
+          read_issues() {
+            local url="$1" token_header="$2" body
+
+            if [ -n "${token_header}" ]; then
+              if body=$(curl -sS --fail-with-body -H "${token_header}" "${url}" 2>&1); then
+                printf '%s' "${body}"
+
+                return 0
+              fi
+
+              echo "::warning::authenticated read refused (${body}); retrying anonymously" >&2
+            fi
+
+            curl -sS --fail-with-body "${url}"
+          }
+
           if [ "${CODEBERG_ENABLED}" = "true" ]; then
-            cb_auth=()
+            cb_header=""
             if [ -n "${CODEBERG_TOKEN}" ]; then
-              cb_auth=(-H "Authorization: token ${CODEBERG_TOKEN}")
+              cb_header="Authorization: token ${CODEBERG_TOKEN}"
             fi
 
             # state=all: a run has to see closed issues too, or it can never
             # notice that something it already relayed has since been resolved.
-            if cb=$(curl -sS --fail-with-body "${cb_auth[@]}" \
-              "${CODEBERG_BASE}/api/v1/repos/${OWNER}/${REPO}/issues?state=all&type=issues&limit=100" 2>&1); then
+            if cb=$(read_issues \
+              "${CODEBERG_BASE}/api/v1/repos/${OWNER}/${REPO}/issues?state=all&type=issues&limit=100" \
+              "${cb_header}" 2>&1); then
 
               foreign=$(printf '%s' "${cb}" | jq -c --argjson acc "${foreign}" '
                 $acc + [ .[] | {
@@ -142,15 +164,16 @@ jobs:
           fi
 
           if [ "${GITLAB_ENABLED}" = "true" ]; then
-            gl_auth=()
+            gl_header=""
             if [ -n "${GITLAB_TOKEN}" ]; then
-              gl_auth=(-H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
+              gl_header="PRIVATE-TOKEN: ${GITLAB_TOKEN}"
             fi
 
             encoded="${OWNER}%2F${REPO}"
 
-            if gl=$(curl -sS --fail-with-body "${gl_auth[@]}" \
-              "https://gitlab.com/api/v4/projects/${encoded}/issues?state=all&per_page=100" 2>&1); then
+            if gl=$(read_issues \
+              "https://gitlab.com/api/v4/projects/${encoded}/issues?state=all&per_page=100" \
+              "${gl_header}" 2>&1); then
 
               foreign=$(printf '%s' "${gl}" | jq -c --argjson acc "${foreign}" '
                 $acc + [ .[] | {
