@@ -44,6 +44,12 @@ name: Git Mirror
 # target that GitHub does not have is overwritten, and with `prune: true`
 # (default) refs deleted here are deleted there. These are read-only copies.
 #
+# Because they are read-only, `disable_pull_requests` (default true) turns the
+# pull/merge request feature off on Codeberg and GitLab. A PR merged on a mirror
+# is destroyed by the next force-push, and unlike GitHub -- where a workflow can
+# close one with an explanation -- neither platform can refuse it, so the button
+# comes off instead. Issues stay on, and so does forking.
+#
 # Two things this does NOT do the obvious way, both deliberate:
 #
 #   1. It bare-clones the source instead of using actions/checkout + `git push
@@ -86,6 +92,12 @@ on:
 
       sync_metadata:
         description: "Sync the GitHub description (and topics/project URL, where supported)"
+        required: false
+        type: boolean
+        default: true
+
+      disable_pull_requests:
+        description: "Turn the pull/merge request feature OFF on the mirror. A mirror is force-pushed from the source, so anything merged here is destroyed on the next sync -- and neither Gitea nor GitLab can reject a PR the way a GitHub workflow can, so the only honest answer is to remove the button. Issues stay enabled, and so does forking."
         required: false
         type: boolean
         default: true
@@ -187,6 +199,7 @@ jobs:
           SOURCE: ${{ github.repository }}
           CREATE_MISSING: ${{ inputs.create_missing }}
           SYNC_METADATA: ${{ inputs.sync_metadata }}
+          DISABLE_PULL_REQUESTS: ${{ inputs.disable_pull_requests }}
           PREFIX: ${{ inputs.description_prefix }}
           MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
@@ -262,6 +275,21 @@ jobs:
           elif [ "${status}" != "200" ]; then
             echo "::error::Codeberg lookup returned HTTP ${status}" >&2
             exit 1
+          fi
+
+          # Its own call rather than a field on the metadata PATCH below: that
+          # one carries a description and can be refused for reasons that have
+          # nothing to do with this, and this must not ride on it.
+          if [ "${DISABLE_PULL_REQUESTS}" = "true" ]; then
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PATCH "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d '{"has_pull_requests": false}' \
+              "${api}/repos/${OWNER}/${REPO}" 2>&1); then
+              echo "::error::Codeberg pull-request disable failed: ${out}" >&2
+              exit 1
+            fi
+
+            echo "pull requests disabled on the Codeberg mirror"
           fi
 
           if [ "${SYNC_METADATA}" = "true" ]; then
@@ -343,6 +371,7 @@ jobs:
           SOURCE: ${{ github.repository }}
           CREATE_MISSING: ${{ inputs.create_missing }}
           SYNC_METADATA: ${{ inputs.sync_metadata }}
+          DISABLE_PULL_REQUESTS: ${{ inputs.disable_pull_requests }}
           PREFIX: ${{ inputs.description_prefix }}
           MAXLEN: ${{ inputs.description_max_length }}
           PRUNE: ${{ inputs.prune }}
@@ -453,6 +482,21 @@ jobs:
                 echo "::warning::could not unprotect ${branch_name}; a force push to it will be rejected"
               fi
             done <<< "${protected}"
+          fi
+
+          # Its own call rather than a field on the metadata PUT below: that one
+          # carries the topic array, which GitLab validates as a unit and can
+          # reject wholesale, and this must not ride on it.
+          if [ "${DISABLE_PULL_REQUESTS}" = "true" ]; then
+            if ! out=$(curl -sS --fail-with-body -o /dev/null -X PUT "${auth[@]}" \
+              -H "Content-Type: application/json" \
+              -d '{"merge_requests_access_level": "disabled"}' \
+              "https://gitlab.com/api/v4/projects/${encoded}" 2>&1); then
+              echo "::error::GitLab merge-request disable failed: ${out}" >&2
+              exit 1
+            fi
+
+            echo "merge requests disabled on the GitLab mirror"
           fi
 
           # Read outside the sync_metadata guard: the README injection below
