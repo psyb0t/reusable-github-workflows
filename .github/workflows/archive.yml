@@ -79,10 +79,10 @@ on:
         default: "psyb0t-"
 
       max_new_items_per_day:
-        description: "Ceiling on how many NEW archive.org items may be created in a day across this account. Creating an item is rate-limited far harder than uploading to one that exists -- a burst answers HTTP 503 SlowDown with 'appears to be spam' -- so past this count the job leaves the rest to the next scheduled run instead of hammering. Counted by asking archive.org, not by keeping a tally: a tally drifts the moment a run dies between uploading and recording it."
+        description: "Ceiling on how many NEW archive.org items may be created in a day across this account. Creating an item is rate-limited far harder than uploading to one that exists -- a burst answers HTTP 503 SlowDown with 'appears to be spam' -- so past this count the job leaves the rest to the next scheduled run instead of hammering. Counted by asking archive.org, not by keeping a tally: a tally drifts the moment a run dies between uploading and recording it. Deliberately well under the level that tripped the filter (about a dozen inside an hour), because the ceiling is per DAY rather than per hour and the search index it counts from lags by minutes -- so the true burst can exceed this number, and the margin is what absorbs that."
         required: false
         type: number
-        default: 10
+        default: 5
 
       item_collection:
         description: "archive.org collection to file the item under. `opensource` is the open self-upload collection; anything else generally has to be granted."
