@@ -155,9 +155,15 @@ jobs:
           fi
 
           # Returns 0 as soon as a save is confirmed. Retries only what is worth
-          # retrying: a 429, a 5xx, or a timeout. Any other 4xx is the archive
-          # telling us the URL itself is unacceptable, and waiting longer will
-          # not change that answer.
+          # retrying: a 429, a 404, a 5xx, or a timeout. Any other 4xx is the
+          # archive telling us the URL itself is unacceptable, and waiting longer
+          # will not change that answer.
+          #
+          # 404 is in the retryable set even though it normally means "gone":
+          # Save Page Now answers 404 when it is under load and gives up fetching
+          # the target, and the URL passed here is always this repository's own
+          # page, which exists. Treating it as terminal made a throttled minute
+          # look like a dead link.
           save_with_retry() {
             local url="$1"
             local attempt=1 delay status body
@@ -225,7 +231,7 @@ jobs:
                 000)
                   echo "attempt ${attempt}: no answer within ${URL_TIMEOUT}s, retryable"
                   ;;
-                429 | 5*)
+                404 | 429 | 5*)
                   echo "attempt ${attempt}: HTTP ${status}, retryable"
                   ;;
                 *)
