@@ -76,13 +76,13 @@ on:
         description: "Attempts per request before giving up, including the first"
         required: false
         type: number
-        default: 3
+        default: 5
 
       backoff_seconds:
-        description: "Base delay between attempts. Doubles each retry, so 10 gives 10s then 20s."
+        description: "Base delay between attempts, doubling each retry. With the default 5 attempts that is 30s, 60s, 120s, 240s -- about 7 minutes of patience. Sized for the real constraint: an archive.org account gets 3 concurrent Save Page Now sessions, so several repositories archiving at once queue behind each other and answer 429 until one frees up. The old 3 x 10s gave up while the queue was still draining."
         required: false
         type: number
-        default: 10
+        default: 30
 
       url_timeout_seconds:
         description: "Per-URL budget for a Wayback save. It is slow; a single save has been measured at ~110s."
