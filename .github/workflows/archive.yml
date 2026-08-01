@@ -484,8 +484,16 @@ jobs:
             headers+=(-H "x-archive-meta-homepage:${homepage}")
           fi
 
+          # Both, because they serve different readers. archive.org renders
+          # licenseurl under the heading "Usage" and only prettifies licences it
+          # knows -- effectively the Creative Commons set -- so an SPDX link
+          # shows up as a bare URL. `rights` carries the name a person reads;
+          # `licenseurl` carries the identifier a machine resolves.
           if [ -n "${license}" ] && [ "${license}" != "NOASSERTION" ]; then
             headers+=(-H "x-archive-meta-licenseurl:https://spdx.org/licenses/${license}.html")
+            # ASCII only: header values are latin-1 at best, and a stray em dash
+            # is either rejected or silently mangled on the way through.
+            headers+=(-H "x-archive-meta-rights:${license} License. See https://spdx.org/licenses/${license}.html")
           fi
 
           # Subject headers are numbered, not repeated: a plain repeat overwrites
