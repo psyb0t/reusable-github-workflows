@@ -202,11 +202,11 @@ jobs:
 
           # The label is how the relayed issues are found again, so it has to
           # exist before the first one is created.
-          gh label create "${LABEL}" \
+          gh label create "${LABEL}" -R "${SOURCE}" \
             --description "Opened on a mirror and copied here" \
             --color "ededed" --force >/dev/null
 
-          relayed=$(gh issue list --label "${LABEL}" --state all --limit 500 \
+          relayed=$(gh issue list -R "${SOURCE}" --label "${LABEL}" --state all --limit 500 \
             --json number,body,state)
 
           created=0
@@ -241,9 +241,9 @@ jobs:
                 "${author}" "${origin}" "${opened}" "${url}" "${body}" "${marker}" >/tmp/relay-body.md
 
               origin_label="${origin,,}"
-              gh label create "${origin_label}" --color "ededed" --force >/dev/null
+              gh label create "${origin_label}" -R "${SOURCE}" --color "ededed" --force >/dev/null
 
-              gh issue create \
+              gh issue create -R "${SOURCE}" \
                 --title "${title}" \
                 --body-file /tmp/relay-body.md \
                 --label "${LABEL}" \
@@ -272,11 +272,11 @@ jobs:
                 days=$(( (closed_epoch - opened_epoch) / 86400 ))
               fi
 
-              gh issue comment "${number}" --body "$(printf \
+              gh issue comment "${number}" -R "${SOURCE}" --body "$(printf \
                 'Closed on %s after %s comment(s), %s day(s) open.\n\nThe conversation happened at %s.' \
                 "${origin}" "${comments}" "${days}" "${url}")" >/dev/null
 
-              gh issue close "${number}" --reason completed >/dev/null
+              gh issue close "${number}" -R "${SOURCE}" --reason completed >/dev/null
 
               echo "closed #${number} (source ${url})"
               closed=$((closed + 1))
@@ -285,8 +285,8 @@ jobs:
             fi
 
             if [ "${state}" = "open" ] && [ "${here}" = "closed" ]; then
-              gh issue reopen "${number}" >/dev/null
-              gh issue comment "${number}" --body "Reopened on ${origin}: ${url}" >/dev/null
+              gh issue reopen "${number}" -R "${SOURCE}" >/dev/null
+              gh issue comment "${number}" -R "${SOURCE}" --body "Reopened on ${origin}: ${url}" >/dev/null
 
               echo "reopened #${number} (source ${url})"
               reopened=$((reopened + 1))
