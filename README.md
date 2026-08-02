@@ -101,7 +101,9 @@ jobs:
 Builds and pushes a multi-arch Docker image to Docker Hub.
 
 - Pushes `:latest` from the default branch, `:<tag>` on tag pushes.
-- Updates the Docker Hub repository description (the **Overview** tab) from the repo's `README.md` after every successful push via `peter-evans/dockerhub-description`. The Docker Hub token must have permission to edit the repository.
+- Updates the Docker Hub repository description (the **Overview** tab) from the repo's `README.md` after every successful push via `peter-evans/dockerhub-description`.
+
+> **The Docker Hub token needs Read, Write AND Delete.** That is more than it sounds and it is worth getting right before the first run. Pushing an image only needs Write — but writing repository *metadata* (the description, the README, the visibility flag) sits behind the same scope Docker Hub uses for Delete, and there is no tier between the two. A Read/Write token pushes images perfectly well and then fails every metadata call with `access denied: insufficient scope`, which reads like a broken workflow rather than a token problem. Nothing in this workflow ever issues a `DELETE`; the scope is required only because Docker Hub bundles it.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
 - On tag pushes, creates a GitHub Release once the build succeeds.
 - Optionally scans the pushed image with Grype (`anchore/scan-action`) after push, and uploads the findings as SARIF to the repo's **Security → Code scanning** tab. **Scan runs after the artifact is already published, so it never blocks the push or the GitHub Release.** **A finding does not fail the run by default** (`scan_fail_build: false`). Any image on a real base accumulates upstream CVEs continuously, most with no fix available, so failing on them just turns the pipeline permanently red and the signal stops meaning anything — the Security tab is where findings are meant to be read, and they land there regardless. Set `scan_fail_build: true` for an image where a vulnerability genuinely must block the release. Leaving it false is also what lets a downstream job (e.g. another reusable workflow) `needs:` this one. The SARIF upload needs `permissions: security-events: write` on the caller's job (see below); without it, scanning still runs but the Security tab isn't populated.
@@ -168,7 +170,7 @@ Setting `scan_vex_file` makes the scan job check the repository out — it other
 | Secret | Required | Description |
 |---|---|---|
 | `dockerhub_username` | yes | Docker Hub username. |
-| `dockerhub_token` | yes | Docker Hub access token (NOT the account password). |
+| `dockerhub_token` | yes | Docker Hub access token (NOT the account password). **Needs Read, Write and Delete** — see below. |
 
 ### Single-image example
 

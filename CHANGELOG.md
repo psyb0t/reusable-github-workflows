@@ -4,6 +4,22 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.35.2 — 2026-08-02
+
+Documents the Docker Hub token scope, which nothing stated and which is not the
+one most people would pick.
+
+- **`dockerhub_token` needs Read, Write AND Delete.** Pushing an image only needs
+  Write, but writing repository *metadata* — the description, the README, the
+  visibility flag — sits behind the same scope Docker Hub uses for Delete, and
+  there is no tier between them. A Read/Write token pushes images perfectly well
+  and then fails every metadata call with `access denied: insufficient scope`,
+  which reads like a broken workflow rather than a token problem.
+- Nothing here ever issues a `DELETE`. The scope is required only because Docker
+  Hub bundles it with metadata writes; the requirement is theirs, not this
+  workflow's.
+- Docs only. No input, behaviour or permission change.
+
 ## v0.35.1 — 2026-08-02
 
 Keeps the Docker Hub credentials out of every process argument list.

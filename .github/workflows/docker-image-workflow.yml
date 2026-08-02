@@ -103,7 +103,7 @@ on:
         required: true
 
       dockerhub_token:
-        description: "Docker Hub token"
+        description: "Docker Hub access token, NOT the account password. It must carry Read, Write AND Delete. That is more than it sounds: pushing an image only needs Write, but writing repository METADATA -- the description, the README, the visibility flag -- sits behind the same scope Docker Hub uses for Delete, and there is no tier in between. A Read/Write token pushes images perfectly well and then fails every metadata call with `access denied: insufficient scope`, which is easy to mistake for a broken workflow. Nothing here ever issues a DELETE."
         required: true
 
 concurrency:
