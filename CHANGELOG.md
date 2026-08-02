@@ -4,6 +4,34 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.36.0 — 2026-08-02
+
+Adds `make-checks.yml`, so a repo whose toolchain lives in its container can run
+lint and tests without a language workflow installing a toolchain nothing uses.
+
+- **New workflow: `make-checks.yml`.** Checks out the repo and runs
+  `lint_command` then `test_command` — no `setup-go`, no `setup-python`, nothing
+  language-specific. The runner already has a Docker daemon; the repo's
+  `Makefile` owns everything past that. Inputs: `lint_command`, `test_command`,
+  `dep_command`, `coverage_file`, `coverage_artifact`, `runs_on`. The three
+  command inputs take `-` or `""` to skip a step, matching `go-workflow.yml`.
+- **One job, not two.** Lint and test run as steps in a single `checks` job
+  rather than in parallel jobs. Parallel jobs would each rebuild the repo's dev
+  image from scratch — no layer cache is shared between runners — paying the
+  dominant cost twice to save a step that is usually seconds.
+- **`dep_command` defaults to empty**, unlike the language workflows. When the
+  toolchain lives in a container, the dependency env is built inside that
+  container and cannot be handed to a later step on the host, so a host-side
+  dependency step has nothing to carry forward.
+- **`coverage_file` uploads the artifact `create-badges.yml` reads**, so a caller
+  wanting a coverage badge no longer hand-rolls an `upload-artifact` step and the
+  `needs:` edge that keeps it from racing the badges job.
+- Intended to be called as its own job with the build gated on it
+  (`needs: [checks]`). Folding the same commands into `docker-image-workflow.yml`
+  as extra steps would tie them to that workflow's ref gating — every build job
+  there runs only on `master` / `main` / tags — so the checks would fire only
+  when you are already publishing, and never on a feature branch.
+
 ## v0.35.2 — 2026-08-02
 
 Documents the Docker Hub token scope, which nothing stated and which is not the

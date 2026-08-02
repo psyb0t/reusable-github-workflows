@@ -18,6 +18,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [docker-image-workflow.yml](#docker-image-workflowyml)
   - [go-workflow.yml](#go-workflowyml)
   - [python-package-workflow.yml](#python-package-workflowyml)
+  - [make-checks.yml](#make-checksyml)
   - [clawhub-publish.yml](#clawhub-publishyml)
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
   - [create-badges.yml](#create-badgesyml)
@@ -46,6 +47,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`docker-image-workflow.yml`](#docker-image-workflowyml) | Buildx multi-arch / multi-target Docker Hub publish + SBOM/provenance + Grype scan → Security tab + GitHub Release. |
 | [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
+| [`make-checks.yml`](#make-checksyml) | Run a repo's own lint / test commands with no toolchain setup — for projects whose toolchain lives in their container. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
@@ -440,6 +442,83 @@ jobs:
 ```
 
 No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. The `id-token: write` permission on the calling job is required.
+
+## make-checks.yml
+
+Runs a repo's own lint + test commands. No language, no toolchain setup — for projects that carry their toolchain in a container (typically the ones that ship a Docker image), where `setup-go` / `setup-python` would install something nothing uses.
+
+- **One job, not a lint job plus a test job.** Splitting them would run in parallel, but each runner would build the repo's dev image from scratch — nothing shares a layer cache between them — so the dominant cost gets paid twice to save a step that is usually seconds.
+- `lint_command`, `test_command` and `dep_command` accept `-` (preferred) or `""` to skip that step, same convention as [`go-workflow.yml`](#go-workflowyml).
+- `dep_command` is **off by default**, unlike the language workflows. When the toolchain lives in a container, the dependency env is built inside that container and can't be handed to a later step on the host, so a host-side dependency step has nothing to carry forward.
+- Set `coverage_file` to upload the coverage artifact a downstream [`create-badges.yml`](#create-badgesyml) job reads. Leave it empty and nothing is uploaded — enabling `coverage: true` on the badges job without producing that file fails the badges job.
+
+**Call it as its own job and gate the build on it** (`needs: [checks]`). Folding the same commands into [`docker-image-workflow.yml`](#docker-image-workflowyml) as extra steps looks simpler but isn't: every build job there is gated to `master` / `main` / tags, so the checks would only run at the moment you're already publishing — never on a feature branch, which is where a failing test is worth catching.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `lint_command` | string | `"make lint"` | Lint command. Set to `-` to skip the step. |
+| `test_command` | string | `"make test"` | Test command. Set to `-` to skip the step. |
+| `dep_command` | string | `""` | Dependency setup, run before lint and test. Off by default. |
+| `coverage_file` | string | `""` | If set, upload this file (produced by `test_command`, containing the coverage percentage) as an artifact for a downstream `create-badges.yml` job. |
+| `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. Must match what the badges job downloads. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. |
+
+### Security note
+
+`lint_command`, `test_command` and `dep_command` are interpolated into shell scripts, exactly as in [`go-workflow.yml`](#go-workflowyml). Callers control these strings, which is equivalent to arbitrary code execution on the runner with whatever secrets and permissions the caller workflow exposes. Only call this workflow from trusted repos with branch protection on the workflow files.
+
+### Example
+
+Checks on every push; the image build and the badges wait on them.
+
+```yaml
+name: pipeline
+on: [push]
+
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/make-checks.yml@master
+
+  docker:
+    needs: [checks]
+    if: github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      security-events: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: you/yourimage
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+### Example with a coverage badge
+
+`test_command` has to write the percentage to `coverage_file` itself; this workflow only uploads what it finds there.
+
+```yaml
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/make-checks.yml@master
+    with:
+      test_command: "make coverage-percent"
+      coverage_file: coverage-percent.txt
+
+  badges:
+    needs: [checks]
+    permissions:
+      contents: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
+    with:
+      coverage: true
+```
 
 ## clawhub-publish.yml
 
