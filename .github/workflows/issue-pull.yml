@@ -117,20 +117,45 @@ jobs:
           # a request that would have succeeded anonymously into a 403. So every
           # authenticated read falls back to an anonymous one rather than giving
           # up on the platform for that run.
+          # Returns a JSON array on stdout, or non-zero with the offending
+          # payload on stdout for the caller to put in a warning. Diagnostics go
+          # to stderr and MUST NOT be captured by the caller.
           read_issues() {
             local url="$1" token_header="$2" body
 
             if [ -n "${token_header}" ]; then
-              if body=$(curl -sS --fail-with-body -H "${token_header}" "${url}" 2>&1); then
-                printf '%s' "${body}"
+              if body=$(curl -sS --fail-with-body -H "${token_header}" "${url}"); then
+                emit_json_array "${body}"
 
-                return 0
+                return $?
               fi
 
               echo "::warning::authenticated read refused (${body}); retrying anonymously" >&2
             fi
 
-            curl -sS --fail-with-body "${url}"
+            if ! body=$(curl -sS --fail-with-body "${url}"); then
+              printf '%s' "${body}"
+
+              return 1
+            fi
+
+            emit_json_array "${body}"
+          }
+
+          # A mirror answering 200 with an HTML error page, a rate-limit notice,
+          # or an empty body used to reach jq unchecked and abort the whole run
+          # under `set -e`. One flaky platform should cost that platform's side
+          # of the relay, not the job.
+          emit_json_array() {
+            local body="$1"
+
+            if ! printf '%s' "${body}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+              printf '%s' "${body}"
+
+              return 1
+            fi
+
+            printf '%s' "${body}"
           }
 
           if [ "${CODEBERG_ENABLED}" = "true" ]; then
@@ -141,9 +166,13 @@ jobs:
 
             # state=all: a run has to see closed issues too, or it can never
             # notice that something it already relayed has since been resolved.
+            # No 2>&1 here. read_issues writes its retrying-anonymously warning
+            # to stderr, so merging the streams prepends that line to the JSON
+            # and jq dies on the leading ':' -- which is every repo whose
+            # authenticated read is refused, i.e. nearly all of them.
             if cb=$(read_issues \
               "${CODEBERG_BASE}/api/v1/repos/${OWNER}/${REPO}/issues?state=all&type=issues&limit=100" \
-              "${cb_header}" 2>&1); then
+              "${cb_header}"); then
 
               foreign=$(printf '%s' "${cb}" | jq -c --argjson acc "${foreign}" '
                 $acc + [ .[] | {
@@ -171,9 +200,10 @@ jobs:
 
             encoded="${OWNER}%2F${REPO}"
 
+            # No 2>&1 -- see the Codeberg call above.
             if gl=$(read_issues \
               "https://gitlab.com/api/v4/projects/${encoded}/issues?state=all&per_page=100" \
-              "${gl_header}" 2>&1); then
+              "${gl_header}"); then
 
               foreign=$(printf '%s' "${gl}" | jq -c --argjson acc "${foreign}" '
                 $acc + [ .[] | {

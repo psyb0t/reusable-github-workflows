@@ -4,6 +4,26 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.36.1 — 2026-08-02
+
+Fixes `issue-pull.yml`, which had been failing on every scheduled run in all but
+one caller repository since it shipped.
+
+- **The call sites captured stderr into the payload.** `cb=$(read_issues … 2>&1)`
+  merged the stream carrying the
+  `::warning::authenticated read refused …; retrying anonymously` notice, so the
+  captured value became that warning line followed by the JSON body. `jq` then
+  failed with `parse error: Expected string key before ':' at line 1, column 1`
+  and the job died. Only a repository whose *authenticated* read succeeded
+  escaped it, because no warning was ever emitted. Both call sites now let
+  stderr reach the log instead of the variable.
+- **A non-JSON body no longer aborts the run.** A mirror answering `200` with an
+  HTML error page, a rate-limit notice, or an empty body used to reach `jq`
+  unchecked and kill the job under `set -e`. `read_issues` now verifies the
+  payload parses as a JSON array and returns non-zero otherwise, so the existing
+  warn-and-skip branch handles it: one unhealthy platform costs that platform's
+  side of the relay for that run, not the whole job.
+
 ## v0.36.0 — 2026-08-02
 
 Adds `make-checks.yml`, so a repo whose toolchain lives in its container can run
