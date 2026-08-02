@@ -108,6 +108,14 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 
 Trigger from `push` so it fires on branch and tag pushes. The workflow itself only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*` — pushes to other branches do nothing.
 
+**The Docker Hub page is kept in step with the GitHub one.** Three things drift otherwise, and all three are invisible until someone lands on the Docker Hub page and finds nothing useful:
+
+- **Visibility.** Pushing to a repository that does not exist creates it, taking its visibility from the account's default preference. That makes the result depend on a setting nobody looks at — and a repository that came out private still produces a green run with a successful push that nobody else can pull. `dockerhub_private` (default `false`) is read back after every push and corrected when it differs.
+- **The short description.** Set from the GitHub repository description, so the two cannot diverge. Docker Hub caps it at **100 characters**; longer text is cut to end in `...`, counting codepoints rather than bytes — a byte count would slice a multi-byte character in half.
+- **Links.** Docker Hub has no field for a project URL or a source URL, the same gap GitLab has. With `readme_url_header` (default `true`) a source link — plus the project page when the repo has a homepage — is prepended to the long description. Only the copy pushed to Docker Hub is affected; the README in the repository is untouched.
+
+Topics are deliberately **not** synced: Docker Hub's `categories` are a fixed taxonomy rather than free-form tags, so GitHub topics have nothing to map onto.
+
 **Suppressing a CVE you have actually assessed — `scan_vex_file`.** An image on a real base carries upstream CVEs in code it never executes. A blanket ignore list is the wrong answer to that, because it reads identically to "we stopped looking". An [OpenVEX](https://openvex.dev) document is the right one: it names the CVE, states `not_affected`, gives a machine-readable justification (`vulnerable_code_not_in_execute_path` and friends) plus a human impact statement, and lives in the repo where it gets reviewed like any other file.
 
 ```yaml
@@ -147,6 +155,9 @@ Setting `scan_vex_file` makes the scan job check the repository out — it other
 | `scan_fail_build` | boolean | `false` | Fail the run on a finding at/above `scan_severity`. Off by default — upstream CVEs are continuous and mostly unfixable, so failing on them makes the pipeline permanently red for no signal; findings still reach the Security tab. Set `true` where a vuln must block the release. Populating the Security tab needs `permissions: security-events: write` on the caller job. |
 | `scan_vex_file` | string | `""` | Path in the repo to an [OpenVEX](https://openvex.dev) document, passed to Grype as `--vex`. For a CVE you have **assessed** as not affecting this image. See below — suppressed findings leave the Security tab too. |
 | `scan_only_fixed` | boolean | `false` | Only report vulnerabilities that have a fix available. |
+| `dockerhub_private` | boolean | `false` | Visibility the Docker Hub repo should have. Read after every push and corrected when it differs — see below. |
+| `sync_description` | boolean | `true` | Set the Docker Hub short description from the GitHub repo description (cut to 100 characters), and compose the long one. |
+| `readme_url_header` | boolean | `true` | Prepend source + project-page links to the long description on Docker Hub. The repo's own README is not modified. |
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `free_disk_space` | boolean | `true` | Free ~25-30 GB before build (Android SDK, .NET, Haskell, large apt packages, preloaded docker images). **Disable for self-hosted runners** — wipes shared host directories. |

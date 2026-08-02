@@ -4,6 +4,30 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.35.0 — 2026-08-02
+
+Makes the Docker Hub side of a publish say what the GitHub side already says.
+
+- **New `dockerhub_private`** (default `false`). Pushing to a repository that
+  does not exist creates it, and its visibility comes from the account's default
+  preference — so the outcome depended on a setting nobody looks at, and a repo
+  that came out private still produced a green run with a successful push that
+  nobody else could pull. The visibility is now read after every push and
+  corrected when it differs.
+- **New `sync_description`** (default `true`). The Docker Hub short description
+  is set from the GitHub repository description, so the two cannot drift. Docker
+  Hub caps it at 100 **characters**; anything longer is cut to end in `...`, and
+  the cut counts codepoints rather than bytes — a byte-count slices a multi-byte
+  character in half. Every existing image repo here had an empty short
+  description and a GitHub one between 219 and 349 characters.
+- **New `readme_url_header`** (default `true`). Docker Hub has no field for a
+  link of any kind — the same gap GitLab has — so a source link, plus the
+  project page when one is set, is prepended to the top of the long description.
+  Only the copy pushed to Docker Hub is touched; the README in the repository is
+  left alone.
+- Not synced, because Docker Hub has nowhere to put them: topics (its
+  `categories` are a fixed taxonomy, not free-form) and any project URL.
+
 ## v0.34.0 — 2026-08-01
 
 Lets a caller suppress a CVE it has assessed, with the assessment written down.

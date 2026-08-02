@@ -55,6 +55,24 @@ on:
         type: boolean
         default: false
 
+      dockerhub_private:
+        description: "Visibility the Docker Hub repository should have. Checked after every push and corrected if it differs. Pushing to a repository that does not exist creates it, taking its visibility from the account's default setting -- so without this the result depends on a preference nobody looks at, and a repo that silently came out private still produces a green run with a successful push that nobody else can pull. Default false: these are published images."
+        required: false
+        type: boolean
+        default: false
+
+      sync_description:
+        description: "Set the Docker Hub short description from the GitHub repository description, and prepend source + project links to the long description. Docker Hub caps the short description at 100 CHARACTERS, so a longer one is cut to end in '...'; the cut counts codepoints rather than bytes, because a byte-count would slice a multi-byte character in half."
+        required: false
+        type: boolean
+        default: true
+
+      readme_url_header:
+        description: "Prepend links back to the GitHub repository, and to the project homepage when one is set, at the top of the long description on Docker Hub. A Docker Hub page is often where someone lands first and it has no field for either link -- the same gap GitLab has, handled the same way. Only the copy pushed to Docker Hub is touched; the README in the repository is not modified."
+        required: false
+        type: boolean
+        default: true
+
       cache_mode:
         description: "Buildx cache mode (max caches all layers, min caches final only). Cache export is best-effort and never blocks image publication."
         required: false
@@ -158,12 +176,124 @@ jobs:
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
+      # Docker Hub has a short description and a long one, and no field at all
+      # for a link -- the same gap GitLab has. The long description IS the
+      # README, so the links go at the top of the copy pushed there.
+      - name: Compose the Docker Hub description
+        id: dockerhub_meta
+        if: inputs.sync_description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.repository }}
+          URL_HEADER: ${{ inputs.readme_url_header }}
+        run: |
+          set -euo pipefail
+
+          meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
+
+          # Docker Hub caps this at 100 CHARACTERS. jq counts codepoints; bash
+          # ${#var} counts bytes and would cut a multi-byte character in half.
+          short=$(printf '%s' "${meta}" | jq -r '
+            .description
+            | if length > 100 then .[0:97] + "..." else . end
+          ')
+          {
+            echo "short<<EOF"
+            echo "${short}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          readme="README.md"
+          if [ ! -f "${readme}" ]; then
+            echo "::warning::no README.md; Docker Hub long description left as is"
+            echo "path=" >> "${GITHUB_OUTPUT}"
+
+            exit 0
+          fi
+
+          target="${RUNNER_TEMP}/dockerhub-readme.md"
+
+          if [ "${URL_HEADER}" != "true" ]; then
+            cp "${readme}" "${target}"
+          else
+            homepage=$(printf '%s' "${meta}" | jq -r '.homepage')
+            {
+              printf '[Source](https://github.com/%s)' "${SOURCE}"
+              if [ -n "${homepage}" ]; then
+                printf ' | [Project page](%s)' "${homepage}"
+              fi
+              printf '\n\n'
+              cat "${readme}"
+            } > "${target}"
+          fi
+
+          echo "path=${target}" >> "${GITHUB_OUTPUT}"
+
       - name: Docker Hub Description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.dockerhub_username }}
           password: ${{ secrets.dockerhub_token }}
           repository: ${{ inputs.repository_name }}
+          short-description: ${{ steps.dockerhub_meta.outputs.short }}
+          readme-filepath: ${{ steps.dockerhub_meta.outputs.path }}
+
+      # Pushing to a repository that does not exist creates it, and its
+      # visibility comes from the account's default preference. That makes the
+      # result depend on a setting nobody looks at, and a repository that came
+      # out private still yields a green run with a successful push that nobody
+      # else can pull. So assert it rather than hope.
+      - name: Enforce Docker Hub visibility
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+          REPOSITORY: ${{ inputs.repository_name }}
+          WANT_PRIVATE: ${{ inputs.dockerhub_private }}
+        run: |
+          set -euo pipefail
+
+          # Credentials go in on stdin, never as arguments: an argv is readable
+          # by anything else on the runner.
+          jwt=$(jq -nc --arg u "${DOCKERHUB_USERNAME}" --arg p "${DOCKERHUB_TOKEN}" \
+            '{username: $u, password: $p}' \
+            | curl -sS --fail-with-body -X POST \
+              -H "Content-Type: application/json" --data @- \
+              "https://hub.docker.com/v2/users/login/" \
+            | jq -r '.token // empty')
+
+          if [ -z "${jwt}" ]; then
+            echo "::warning::could not authenticate to Docker Hub; visibility not verified"
+
+            exit 0
+          fi
+
+          api="https://hub.docker.com/v2/repositories/${REPOSITORY}/"
+
+          current=$(curl -sS -H "Authorization: JWT ${jwt}" "${api}" | jq -r '.is_private // empty')
+
+          if [ -z "${current}" ]; then
+            echo "::warning::could not read ${REPOSITORY} from Docker Hub; visibility not verified"
+
+            exit 0
+          fi
+
+          if [ "${current}" = "${WANT_PRIVATE}" ]; then
+            echo "visibility already correct (is_private=${current})"
+
+            exit 0
+          fi
+
+          echo "correcting ${REPOSITORY}: is_private ${current} -> ${WANT_PRIVATE}"
+
+          if ! out=$(jq -nc --argjson p "${WANT_PRIVATE}" '{is_private: $p}' \
+            | curl -sS --fail-with-body -o /dev/null -X PATCH \
+              -H "Authorization: JWT ${jwt}" -H "Content-Type: application/json" \
+              --data @- "${api}" 2>&1); then
+            echo "::error::could not set visibility on ${REPOSITORY}: ${out}" >&2
+            exit 1
+          fi
+
+          echo "visibility set to is_private=${WANT_PRIVATE}"
 
   release:
     needs: build
@@ -456,9 +586,121 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      # Docker Hub has a short description and a long one, and no field at all
+      # for a link -- the same gap GitLab has. The long description IS the
+      # README, so the links go at the top of the copy pushed there.
+      - name: Compose the Docker Hub description
+        id: dockerhub_meta
+        if: inputs.sync_description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.repository }}
+          URL_HEADER: ${{ inputs.readme_url_header }}
+        run: |
+          set -euo pipefail
+
+          meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
+
+          # Docker Hub caps this at 100 CHARACTERS. jq counts codepoints; bash
+          # ${#var} counts bytes and would cut a multi-byte character in half.
+          short=$(printf '%s' "${meta}" | jq -r '
+            .description
+            | if length > 100 then .[0:97] + "..." else . end
+          ')
+          {
+            echo "short<<EOF"
+            echo "${short}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          readme="README.md"
+          if [ ! -f "${readme}" ]; then
+            echo "::warning::no README.md; Docker Hub long description left as is"
+            echo "path=" >> "${GITHUB_OUTPUT}"
+
+            exit 0
+          fi
+
+          target="${RUNNER_TEMP}/dockerhub-readme.md"
+
+          if [ "${URL_HEADER}" != "true" ]; then
+            cp "${readme}" "${target}"
+          else
+            homepage=$(printf '%s' "${meta}" | jq -r '.homepage')
+            {
+              printf '[Source](https://github.com/%s)' "${SOURCE}"
+              if [ -n "${homepage}" ]; then
+                printf ' | [Project page](%s)' "${homepage}"
+              fi
+              printf '\n\n'
+              cat "${readme}"
+            } > "${target}"
+          fi
+
+          echo "path=${target}" >> "${GITHUB_OUTPUT}"
+
       - name: Docker Hub Description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.dockerhub_username }}
           password: ${{ secrets.dockerhub_token }}
           repository: ${{ inputs.repository_name }}
+          short-description: ${{ steps.dockerhub_meta.outputs.short }}
+          readme-filepath: ${{ steps.dockerhub_meta.outputs.path }}
+
+      # Pushing to a repository that does not exist creates it, and its
+      # visibility comes from the account's default preference. That makes the
+      # result depend on a setting nobody looks at, and a repository that came
+      # out private still yields a green run with a successful push that nobody
+      # else can pull. So assert it rather than hope.
+      - name: Enforce Docker Hub visibility
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+          REPOSITORY: ${{ inputs.repository_name }}
+          WANT_PRIVATE: ${{ inputs.dockerhub_private }}
+        run: |
+          set -euo pipefail
+
+          # Credentials go in on stdin, never as arguments: an argv is readable
+          # by anything else on the runner.
+          jwt=$(jq -nc --arg u "${DOCKERHUB_USERNAME}" --arg p "${DOCKERHUB_TOKEN}" \
+            '{username: $u, password: $p}' \
+            | curl -sS --fail-with-body -X POST \
+              -H "Content-Type: application/json" --data @- \
+              "https://hub.docker.com/v2/users/login/" \
+            | jq -r '.token // empty')
+
+          if [ -z "${jwt}" ]; then
+            echo "::warning::could not authenticate to Docker Hub; visibility not verified"
+
+            exit 0
+          fi
+
+          api="https://hub.docker.com/v2/repositories/${REPOSITORY}/"
+
+          current=$(curl -sS -H "Authorization: JWT ${jwt}" "${api}" | jq -r '.is_private // empty')
+
+          if [ -z "${current}" ]; then
+            echo "::warning::could not read ${REPOSITORY} from Docker Hub; visibility not verified"
+
+            exit 0
+          fi
+
+          if [ "${current}" = "${WANT_PRIVATE}" ]; then
+            echo "visibility already correct (is_private=${current})"
+
+            exit 0
+          fi
+
+          echo "correcting ${REPOSITORY}: is_private ${current} -> ${WANT_PRIVATE}"
+
+          if ! out=$(jq -nc --argjson p "${WANT_PRIVATE}" '{is_private: $p}' \
+            | curl -sS --fail-with-body -o /dev/null -X PATCH \
+              -H "Authorization: JWT ${jwt}" -H "Content-Type: application/json" \
+              --data @- "${api}" 2>&1); then
+            echo "::error::could not set visibility on ${REPOSITORY}: ${out}" >&2
+            exit 1
+          fi
+
+          echo "visibility set to is_private=${WANT_PRIVATE}"
