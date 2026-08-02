@@ -4,6 +4,21 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.35.1 — 2026-08-02
+
+Keeps the Docker Hub credentials out of every process argument list.
+
+- The visibility step added in v0.35.0 passed the access token to `jq` as
+  `--arg`, and the resulting session token to `curl` as `-H`. Both land in a
+  process's argv, which `/proc` exposes to anything else running on the machine
+  — on a shared or self-hosted runner that is readable by another job.
+- `jq` now reads both credentials out of the environment (`env.DOCKERHUB_TOKEN`)
+  instead of taking them as arguments, and the session token goes into a `0600`
+  file passed as `curl --config`, removed on exit. `printf` writing that file is
+  a shell builtin, so the token never becomes another process's argv on the way
+  in either.
+- No input or behaviour changed. Anyone already on v0.35.0 should take this.
+
 ## v0.35.0 — 2026-08-02
 
 Makes the Docker Hub side of a publish say what the GitHub side already says.

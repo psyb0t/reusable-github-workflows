@@ -252,10 +252,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Credentials go in on stdin, never as arguments: an argv is readable
-          # by anything else on the runner.
-          jwt=$(jq -nc --arg u "${DOCKERHUB_USERNAME}" --arg p "${DOCKERHUB_TOKEN}" \
-            '{username: $u, password: $p}' \
+          # Nothing secret may reach a process argv -- /proc makes that readable
+          # to anything else on the runner. jq reads the credentials out of the
+          # environment rather than taking them as arguments, and the body goes
+          # to curl on stdin.
+          jwt=$(jq -nc '{username: env.DOCKERHUB_USERNAME, password: env.DOCKERHUB_TOKEN}' \
             | curl -sS --fail-with-body -X POST \
               -H "Content-Type: application/json" --data @- \
               "https://hub.docker.com/v2/users/login/" \
@@ -269,7 +270,17 @@ jobs:
 
           api="https://hub.docker.com/v2/repositories/${REPOSITORY}/"
 
-          current=$(curl -sS -H "Authorization: JWT ${jwt}" "${api}" | jq -r '.is_private // empty')
+          # The session token is a credential too, so it goes in a 0600 config
+          # file rather than an -H argument. printf is a shell builtin, so the
+          # token never becomes a separate process's argv on the way in.
+          auth_config="${RUNNER_TEMP}/dockerhub-auth"
+          (
+            umask 077
+            printf 'header = "Authorization: JWT %s"\n' "${jwt}" > "${auth_config}"
+          )
+          trap 'rm -f "${auth_config}"' EXIT
+
+          current=$(curl -sS --config "${auth_config}" "${api}" | jq -r '.is_private // empty')
 
           if [ -z "${current}" ]; then
             echo "::warning::could not read ${REPOSITORY} from Docker Hub; visibility not verified"
@@ -287,7 +298,7 @@ jobs:
 
           if ! out=$(jq -nc --argjson p "${WANT_PRIVATE}" '{is_private: $p}' \
             | curl -sS --fail-with-body -o /dev/null -X PATCH \
-              -H "Authorization: JWT ${jwt}" -H "Content-Type: application/json" \
+              --config "${auth_config}" -H "Content-Type: application/json" \
               --data @- "${api}" 2>&1); then
             echo "::error::could not set visibility on ${REPOSITORY}: ${out}" >&2
             exit 1
@@ -662,10 +673,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Credentials go in on stdin, never as arguments: an argv is readable
-          # by anything else on the runner.
-          jwt=$(jq -nc --arg u "${DOCKERHUB_USERNAME}" --arg p "${DOCKERHUB_TOKEN}" \
-            '{username: $u, password: $p}' \
+          # Nothing secret may reach a process argv -- /proc makes that readable
+          # to anything else on the runner. jq reads the credentials out of the
+          # environment rather than taking them as arguments, and the body goes
+          # to curl on stdin.
+          jwt=$(jq -nc '{username: env.DOCKERHUB_USERNAME, password: env.DOCKERHUB_TOKEN}' \
             | curl -sS --fail-with-body -X POST \
               -H "Content-Type: application/json" --data @- \
               "https://hub.docker.com/v2/users/login/" \
@@ -679,7 +691,17 @@ jobs:
 
           api="https://hub.docker.com/v2/repositories/${REPOSITORY}/"
 
-          current=$(curl -sS -H "Authorization: JWT ${jwt}" "${api}" | jq -r '.is_private // empty')
+          # The session token is a credential too, so it goes in a 0600 config
+          # file rather than an -H argument. printf is a shell builtin, so the
+          # token never becomes a separate process's argv on the way in.
+          auth_config="${RUNNER_TEMP}/dockerhub-auth"
+          (
+            umask 077
+            printf 'header = "Authorization: JWT %s"\n' "${jwt}" > "${auth_config}"
+          )
+          trap 'rm -f "${auth_config}"' EXIT
+
+          current=$(curl -sS --config "${auth_config}" "${api}" | jq -r '.is_private // empty')
 
           if [ -z "${current}" ]; then
             echo "::warning::could not read ${REPOSITORY} from Docker Hub; visibility not verified"
@@ -697,7 +719,7 @@ jobs:
 
           if ! out=$(jq -nc --argjson p "${WANT_PRIVATE}" '{is_private: $p}' \
             | curl -sS --fail-with-body -o /dev/null -X PATCH \
-              -H "Authorization: JWT ${jwt}" -H "Content-Type: application/json" \
+              --config "${auth_config}" -H "Content-Type: application/json" \
               --data @- "${api}" 2>&1); then
             echo "::error::could not set visibility on ${REPOSITORY}: ${out}" >&2
             exit 1
