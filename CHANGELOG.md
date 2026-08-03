@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.36.2 — 2026-08-03
+
+Catches an over-length `server.json` description before the publish call instead
+of after everything else has shipped.
+
+- **`mcp-registry-publish.yml` now fails on a description over 100 characters.**
+  The registry enforces that cap and reports it as a `422` from the publish
+  request — which runs after the image push, the GitHub Release and any ClawHub
+  publish have already succeeded. By then the tag is spent: the artifacts exist
+  under it, so the fix needs a new version rather than a re-run. The check reads
+  the field straight out of the file and fails the job with the actual length,
+  before anything is stamped or sent.
+
 ## v0.36.1 — 2026-08-02
 
 Fixes `issue-pull.yml`, which had been failing on every scheduled run in all but

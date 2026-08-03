@@ -155,6 +155,19 @@ jobs:
           if [ ! -f "$SERVER_JSON" ]; then
             echo "::error::$SERVER_JSON not found at repo root"; exit 1
           fi
+
+          # The registry caps description at 100 characters and reports it as a
+          # 422 from the publish call -- which lands AFTER the image push, the
+          # GitHub Release and any ClawHub publish have already succeeded, so the
+          # tag is spent and the fix needs a new version. Fail here instead, on a
+          # field that is right there in the file.
+          description_length="$(jq -r '.description // "" | length' "$SERVER_JSON")"
+          if [ "$description_length" -gt 100 ]; then
+            echo "::error::$SERVER_JSON description is ${description_length} characters; the MCP registry accepts at most 100"
+            jq -r '.description' "$SERVER_JSON" >&2
+            exit 1
+          fi
+
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           # Set the server version to the semver, and repoint every OCI package's
