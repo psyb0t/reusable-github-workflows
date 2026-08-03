@@ -168,6 +168,22 @@ jobs:
             exit 1
           fi
 
+          # Same class of failure as the description above, from the same 422/400
+          # at the very end of a tag run: the registry rejects an OCI package that
+          # carries registryBaseUrl, and wants the registry host inside identifier
+          # ("docker.io/owner/image:1.0.0") instead. Both are checkable here.
+          if jq -e '[.packages // [] | .[] | select(.registryType == "oci") | select(has("registryBaseUrl"))] | length > 0' "$SERVER_JSON" >/dev/null; then
+            echo "::error::$SERVER_JSON has registryBaseUrl on an OCI package; the registry rejects it -- put the registry host in identifier instead"
+            jq -r '.packages[] | select(.registryType == "oci") | .identifier' "$SERVER_JSON" >&2
+            exit 1
+          fi
+
+          if jq -e '[.packages // [] | .[] | select(.registryType == "oci") | .identifier | select((split("/")[0] | test("[.:]")) | not)] | length > 0' "$SERVER_JSON" >/dev/null; then
+            echo "::error::$SERVER_JSON has an OCI identifier without a registry host; use a canonical reference such as docker.io/owner/image:tag"
+            jq -r '.packages[] | select(.registryType == "oci") | .identifier' "$SERVER_JSON" >&2
+            exit 1
+          fi
+
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           # Set the server version to the semver, and repoint every OCI package's

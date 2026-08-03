@@ -4,6 +4,27 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.36.3 — 2026-08-03
+
+Rejects the two remaining `server.json` shapes the MCP registry refuses, in the
+same place and for the same reason as the description check in v0.36.2.
+
+- **`mcp-registry-publish.yml` now fails on `registryBaseUrl` on an OCI
+  package.** The registry answers `400 … OCI packages must not have
+  'registryBaseUrl' field - use canonical reference in 'identifier' instead`.
+  Both fields are in the file, so nothing about that verdict needs a network
+  round trip to reach — but reaching it at publish time costs a version, since
+  the image push, the GitHub Release and any ClawHub publish have all completed
+  by then.
+- **An OCI `identifier` without a registry host is rejected too.** The registry
+  wants a canonical reference (`docker.io/owner/image:tag`); a bare
+  `owner/image` is the other half of the same rejection. The check requires the
+  first path segment to look like a host, which is the same rule Docker itself
+  uses to tell a registry host from a namespace.
+
+Both failures print every OCI identifier in the file, so a caller with several
+packages sees which one is wrong.
+
 ## v0.36.2 — 2026-08-03
 
 Catches an over-length `server.json` description before the publish call instead
