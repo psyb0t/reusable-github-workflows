@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.38.1 — 2026-08-08
+
+Fixes the empty third column in `importers.md`.
+
+- The external flag had a column to itself, which meant that whenever every
+  importer belonged to you — the common case, and the one this ran against
+  first — the table rendered a nameless column that was blank on every row. It
+  read as a broken table rather than as "no strangers here".
+- The table is now two columns, and the mark rides in the repository cell
+  (`owner/repo — **external**`) so it only appears on rows it describes. The
+  count of external importers was already stated in the line above the table, so
+  nothing is lost when there are none.
+
 ## v0.38.0 — 2026-08-08
 
 `create-badges.yml` gains `importers_own_owners`, so the external-importer flag

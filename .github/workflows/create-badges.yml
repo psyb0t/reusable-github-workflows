@@ -270,7 +270,11 @@ jobs:
               else
                 ext="$(printf '%s\n' "${imps[@]}" | awk -F/ -v own="$owners_set" 'index(own, " " $2 " ") == 0' | wc -l)"
                 printf '**%s** of them are outside%s.\n\n' "$ext" "$(printf '%s' "$owners_set" | sed 's/^ //; s/ $//; s/ /`, `/g; s/^/ `/; s/$/`/')"
-                printf '| repository | packages | |\n|---|---:|---|\n'
+                # Two columns. The external mark rides in the repository cell
+                # rather than a column of its own: as a third column it is empty
+                # on every row whenever all importers are yours, which is the
+                # common case and reads as a broken table.
+                printf '| repository | packages |\n|---|---:|\n'
                 printf '%s\n' "${imps[@]}" \
                   | awk -F/ -v own="$owners_set" '
                       { r = $1"/"$2"/"$3; c[r]++; if (index(own, " " $2 " ") == 0) x[r] = 1 }
@@ -278,7 +282,9 @@ jobs:
                     ' \
                   | sort -rn \
                   | while IFS=$'\t' read -r cnt repo flag; do
-                      printf '| [%s](https://%s) | %s | %s |\n' "${repo#github.com/}" "$repo" "$cnt" "$flag"
+                      mark=""
+                      [ -n "$flag" ] && mark=" — **external**"
+                      printf '| [%s](https://%s)%s | %s |\n' "${repo#github.com/}" "$repo" "$mark" "$cnt"
                     done
               fi
             } > "$out/importers.md"
