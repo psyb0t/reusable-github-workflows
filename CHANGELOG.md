@@ -4,6 +4,28 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.38.2 — 2026-08-08
+
+Documentation catch-up. The imported-by badge shipped across v0.37.0–v0.38.1
+with its three inputs described only in the CHANGELOG and the workflow's own
+header comment — the README's `create-badges.yml` section still said three badge
+kinds and listed neither `importers`, `importers_module` nor
+`importers_own_owners`. Anyone reading the README had no way to discover the
+feature existed.
+
+- The inputs table gains all three, including why `importers` is off by default
+  and why owner matching is whole-segment.
+- The section explains what the badge measures and, more importantly, what it
+  does **not**: it is a blast-radius indicator, not an adoption metric. A library
+  with no stars can be imported by dozens of packages that are all your own.
+- Documents the self-checking scrape — reading the total twice and refusing to
+  render on disagreement — because "why does this job fail instead of showing 0"
+  is otherwise a surprise.
+- New "Refreshing the count on a schedule" subsection covering the two traps: a
+  badges-only refresh job deletes the badges it did not regenerate, and daily is
+  wasteful against a crawl that lags by days. Includes the hash-derived cron
+  slot, since GitHub cron has no randomness.
+
 ## v0.38.1 — 2026-08-08
 
 Fixes the empty third column in `importers.md`.

@@ -50,7 +50,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`make-checks.yml`](#make-checksyml) | Run a repo's own lint / test commands with no toolchain setup — for projects whose toolchain lives in their container. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
-| [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
+| [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
 | [`issue-pull.yml`](#issue-pullyml) | Copy issues opened on the Codeberg / GitLab mirrors into GitHub, and close the copy when the original closes. |
 | [`archive.yml`](#archiveyml) | Push the repo into the Wayback Machine (pages), Software Heritage (git history) and archive.org (a browsable item of the source itself). |
@@ -627,11 +627,16 @@ jobs:
 
 Renders status badges as flat SVGs and commits them to an orphan `badges` branch in the caller repo. There is no third-party render service in the path — no shields.io, no codecov — so a badge embedded in a README keeps rendering for as long as the repo exists. The value is baked into the committed SVG at creation time; nothing stays live behind it. The badge files are served straight from GitHub at `https://raw.githubusercontent.com/<owner>/<repo>/badges/<name>.svg`.
 
-Three badge kinds ship today; add more by dropping another block into the workflow's "Render badges" step:
+Four badge kinds ship today; add more by dropping another block into the workflow's "Render badges" step:
 
 - **coverage** — a **dumb reader**. It reads a percentage out of a file and renders it. It does NOT run tests, set up Go, or compute anything — producing that number is entirely your pipeline's job. Point it at a file your pipeline produced (default: downloaded from the `coverage` artifact, file `coverage-percent.txt`). If the coverage badge is enabled and the file is missing, the job **fails**. Colored by threshold (≥90 green, ≥80 light-green, ≥70 yellow, ≥50 orange, else red).
 - **license** — the repo's detected license SPDX id (from the GitHub API).
 - **version** — the latest SemVer tag (`git tag --sort=-v:refname`).
+- **imported by** (Go modules, opt-in) — how many public packages import this module, read from pkg.go.dev. It also writes `importers.md` next to the SVGs: the importing repositories, grouped, package counts descending, each linked, and marked `— **external**` when the owner isn't one of yours. Link the badge at that file so the count is one click from the names.
+
+**The imported-by badge is a blast-radius indicator, not an adoption metric**, and the distinction decides how strictly you have to version the module. A library with no stars can still be imported by dozens of packages — nobody stars a logging or error dependency, they just import it — but if every one of those is your own repo, that means "I use my own library", not that the public depends on it. The `— **external**` mark and the count above the table are what tell those apart.
+
+pkg.go.dev has no API for this, so the count only exists in the page's HTML. That matters because it makes a changed selector, a failed fetch, and "genuinely nobody imports it" all produce the same answer — and on a schedule a wrongly-rendered `0` would overwrite a real count while still looking like data. So the scrape reads the total **twice by different means** — the links it extracts, and the total the page states in prose — and renders only if the two agree. A fetch failure, a missing section marker, an unreadable declared count, or any disagreement **fails the job** and leaves the previously committed badge untouched. It lists only public packages pkg.go.dev has crawled, and the crawl lags publication by days; `importers.md` says so in the file.
 
 The coverage value typically arrives via an artifact an earlier job uploaded — pair this with `go-workflow.yml`'s `coverage_file` input (below), which uploads the percentage file your `test_command` produced. The badges job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Invocations targeting the same caller repository and `badges_branch` are serialized, so default-branch pushes (coverage freshness) and tag pushes (the released version) can safely update the same branch.
 
@@ -644,6 +649,9 @@ The coverage value typically arrives via an artifact an earlier job uploaded —
 | `coverage_file` | `coverage-percent.txt` | Path to the file containing the coverage percentage. |
 | `license` | `true` | Generate the license badge. |
 | `version` | `true` | Generate the version badge. |
+| `importers` | `false` | Go modules only. Generate the imported-by badge and the `importers.md` backlink list from pkg.go.dev. Off by default because every caller pins this workflow at `@master` — on by default would start scraping from every repo at once. |
+| `importers_module` | `""` | Module path to look up. Empty means `github.com/<owner>/<repo>`. |
+| `importers_own_owners` | `""` | Owners to treat as *yours* when marking external importers, space- or comma-separated. Empty means this repo's owner. Set it if you publish under more than one account or org, otherwise your own second org reads as external. Matched on whole owner segments, so `acme` does not swallow `acme-labs`. |
 | `badges_branch` | `badges` | Branch the generated SVGs are committed to. |
 | `runs_on` | `ubuntu-latest` | Runner to use. |
 
@@ -675,6 +683,36 @@ Then embed in the README (raw, GitHub-hosted, no external service):
 ![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)
 ![license](https://raw.githubusercontent.com/<owner>/<repo>/badges/license.svg)
 ![version](https://raw.githubusercontent.com/<owner>/<repo>/badges/version.svg)
+```
+
+The imported-by badge wants a link, so the count reaches the names behind it:
+
+```markdown
+[![imported by](https://raw.githubusercontent.com/<owner>/<repo>/badges/importers.svg)](https://github.com/<owner>/<repo>/blob/badges/importers.md)
+```
+
+### Refreshing the count on a schedule
+
+An importer count goes stale on its own, unlike coverage or version, which change only when you push. To keep it current, put a `schedule:` on the **whole pipeline** — not on a badges-only job:
+
+```yaml
+on:
+  push:
+  schedule:
+    - cron: "54 4 * * 5"
+  workflow_dispatch:
+```
+
+Two things that are easy to get wrong here:
+
+- **Schedule the entire pipeline, never a badges-only refresh.** The publish step wipes the `badges` branch and republishes only what that run produced, so a job that regenerated just the importers badge would **delete** the coverage, license and version badges.
+- **Weekly beats daily.** pkg.go.dev's crawl lags publication by days, so a daily run re-derives an unchanged number six extra times a week — and each one drags your full test suite along, since the badges job needs the coverage artifact.
+
+GitHub cron has no randomness (no Jenkins-style `H`), so spread the slot deterministically instead of picking a round number every repo converges on — the scheduler is best-effort and sheds queued runs hardest at popular times:
+
+```bash
+h=$(printf '%s' "<owner>/<repo>" | sha256sum | tr -d ' -')
+printf '%d %d * * %d\n' $((0x${h:0:4} % 60)) $((0x${h:4:4} % 24)) $((0x${h:8:4} % 7))
 ```
 
 ## git-mirror.yml
