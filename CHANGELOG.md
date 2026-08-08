@@ -4,6 +4,39 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.37.0 — 2026-08-08
+
+`create-badges.yml` gains an opt-in imported-by badge for Go modules, plus the
+backlink list behind it.
+
+- **New inputs `importers` (default `false`) and `importers_module`.** Enabled,
+  the job reads `pkg.go.dev/<module>?tab=importedby`, renders `importers.svg`,
+  and writes `importers.md` beside it — the importing repositories, grouped,
+  package counts descending, and flagged when the owner differs from this repo's.
+  Link the badge at the markdown so the count is one click from the names.
+  Default-off deliberately: every caller pins this workflow at `@master`, so a
+  default-on scrape would start firing from every repo at once.
+- **The scrape self-checks instead of trusting one selector.** pkg.go.dev has no
+  API for this, so the count only exists in HTML — which means every failure
+  mode otherwise looks exactly like "nobody imports it". The job now reads the
+  total twice: the links it extracts, and the total the page states in prose. If
+  they disagree, or the page cannot be fetched, or the section marker is absent,
+  it **fails and renders nothing**, leaving the previously committed badge in
+  place. On a scheduled run a wrongly-rendered `0` would overwrite a real count
+  and still look like data.
+- Caught while building it: pkg.go.dev links the module's own current version as
+  `github.com/<mod>@vX.Y.Z`, which a plain prefix test reads as a third-party
+  importer and inflates the count by one. Version suffixes are stripped before
+  the self-reference filter. Verified against a module where the two reads now
+  agree exactly.
+- `importers.md` states in the file that it lists only PUBLIC packages
+  pkg.go.dev has crawled, and that the crawl lags — so a reader does not mistake
+  it for a complete dependents list.
+- The publish step copies `*.md` as well as `*.svg`. Note it still wipes the
+  badges branch and republishes only what the run produced, so **a badges-only
+  refresh would delete the badges it did not regenerate** — schedule the whole
+  pipeline, not a badge-only job.
+
 ## v0.36.3 — 2026-08-03
 
 Rejects the two remaining `server.json` shapes the MCP registry refuses, in the

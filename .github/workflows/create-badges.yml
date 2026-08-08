@@ -24,10 +24,22 @@ name: Create Badges
 #       with:
 #         coverage: true
 #
+# The imported-by badge (Go modules, opt-in via `importers: true`) additionally
+# writes importers.md next to the SVGs -- the backlink list grouped by
+# repository and flagged by owner. Link the badge AT it, so the count is one
+# click from the names:
+#
+#   [![imported by](https://raw.githubusercontent.com/<o>/<r>/badges/importers.svg)](https://github.com/<o>/<r>/blob/badges/importers.md)
+#
+# It scrapes pkg.go.dev, which has no API for this, so it FAILS the job rather
+# than render a number it could not read -- on a schedule, a wrongly-rendered 0
+# would overwrite a real count and still look like data.
+#
 # README embeds (raw, GitHub-hosted, no external service):
 #   ![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)
 #   ![license](https://raw.githubusercontent.com/<owner>/<repo>/badges/license.svg)
 #   ![version](https://raw.githubusercontent.com/<owner>/<repo>/badges/version.svg)
+#   ![imported by](https://raw.githubusercontent.com/<owner>/<repo>/badges/importers.svg)
 
 on:
   workflow_call:
@@ -57,6 +69,16 @@ on:
         required: false
         default: true
         type: boolean
+      importers:
+        description: "Go modules only. Generate the imported-by badge + importers.md backlink list from pkg.go.dev"
+        required: false
+        default: false
+        type: boolean
+      importers_module:
+        description: "Module path to look up (empty = github.com/<owner>/<repo>)"
+        required: false
+        default: ""
+        type: string
       badges_branch:
         description: "Branch the generated SVGs are committed to"
         required: false
@@ -99,6 +121,8 @@ jobs:
           DO_COVERAGE: ${{ inputs.coverage }}
           DO_LICENSE: ${{ inputs.license }}
           DO_VERSION: ${{ inputs.version }}
+          DO_IMPORTERS: ${{ inputs.importers }}
+          IMPORTERS_MODULE: ${{ inputs.importers_module }}
           COVERAGE_FILE: ${{ inputs.coverage_file }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -157,6 +181,100 @@ jobs:
             mkbadge "version" "$tag" "#007ec6" "$out/version.svg"
           fi
 
+          if [ "$DO_IMPORTERS" = "true" ]; then
+            mod="${IMPORTERS_MODULE:-github.com/$REPO}"
+            url="https://pkg.go.dev/${mod}?tab=importedby"
+            owner="${REPO%%/*}"
+
+            # pkg.go.dev has no API for this; the count only exists in the HTML.
+            # That makes every failure below indistinguishable from "nobody
+            # imports it" unless we check explicitly -- and since this job runs
+            # on a schedule, a wrongly-rendered 0 would OVERWRITE a real count
+            # and look like data. So: fail loudly, keep the previously committed
+            # badge, and never invent a number.
+            if ! html="$(curl -sS --fail --location --max-time 30 "$url")"; then
+              echo "::error::pkg.go.dev fetch failed for ${mod} -- keeping the existing badge" >&2
+              exit 1
+            fi
+
+            # Confirms we are on the page we think we are BEFORE trusting a zero.
+            if ! printf '%s' "$html" | grep -q 'Imported By'; then
+              echo "::error::pkg.go.dev importedby markup changed -- refusing to render a count" >&2
+              exit 1
+            fi
+
+            # The page states its own total in prose. Parsing that as well as
+            # the links turns the scrape into a self-checking instrument: two
+            # independent reads of the same page that must agree.
+            declared="$(printf '%s' "$html" | grep -oiE '[0-9,]+ packages?' | head -1 | grep -oE '[0-9,]+' | tr -d ,)"
+            if [ -z "$declared" ]; then
+              echo "::error::could not read the declared package count -- refusing to render" >&2
+              exit 1
+            fi
+
+            # The `@version` strip matters: the page links the module's own
+            # current version as github.com/<mod>@vX.Y.Z, which a bare prefix
+            # test reads as a third-party importer and inflates the count by one.
+            mapfile -t raw < <(
+              printf '%s' "$html" \
+                | grep -oE 'href="/github\.com/[^"?#]+"' \
+                | sed 's|href="/||; s|"||; s|@.*||' \
+                | sort -u
+            )
+
+            # Drop self-references. Matched as literal prefixes, not regex --
+            # a module path is full of dots.
+            imps=()
+            for p in "${raw[@]}"; do
+              case "$p" in "$mod"|"$mod"/*) continue ;; esac
+              imps+=("$p")
+            done
+
+            n="${#imps[@]}"
+
+            # Disagreement means the selectors drifted from the markup. Render
+            # nothing rather than a number that is quietly wrong -- the whole
+            # point of a badge is that nobody re-derives it by hand.
+            if [ "$n" -ne "$declared" ]; then
+              echo "::error::extracted ${n} importers but the page declares ${declared} -- scrape drifted, refusing to render" >&2
+              exit 1
+            fi
+            if [ "$n" -gt 0 ]; then color="#007ec6"; else color="#9f9f9f"; fi
+            mkbadge "imported by" "$n" "$color" "$out/importers.svg"
+
+            # The backlink list. Grouped by repository because 55 raw package
+            # paths is not something anyone reads, and flagged by owner because
+            # WHO imports it decides how strictly the module has to be
+            # versioned -- a count that is entirely your own fleet means "I use
+            # my own library", not that the public depends on it.
+            {
+              printf '# Imported by\n\n'
+              printf '`%s` is imported by **%s package(s)**.\n\n' "$mod" "$n"
+              printf 'Generated from [pkg.go.dev](%s). Lists only PUBLIC packages that\n' "$url"
+              printf 'pkg.go.dev has crawled -- private and uncrawled importers are invisible here,\n'
+              printf 'and the crawl lags publication by days.\n\n'
+
+              if [ "$n" -eq 0 ]; then
+                printf 'No importers found.\n'
+              else
+                ext="$(printf '%s\n' "${imps[@]}" | awk -F/ -v o="$owner" '$2 != o' | wc -l)"
+                printf '**%s** of them are outside `%s`.\n\n' "$ext" "$owner"
+                printf '| repository | packages | |\n|---|---:|---|\n'
+                printf '%s\n' "${imps[@]}" \
+                  | awk -F/ -v o="$owner" '
+                      { r = $1"/"$2"/"$3; c[r]++; if ($2 != o) x[r] = 1 }
+                      END { for (k in c) printf "%d\t%s\t%s\n", c[k], k, (k in x ? "external" : "") }
+                    ' \
+                  | sort -rn \
+                  | while IFS=$'\t' read -r cnt repo flag; do
+                      printf '| [%s](https://%s) | %s | %s |\n' "${repo#github.com/}" "$repo" "$cnt" "$flag"
+                    done
+              fi
+            } > "$out/importers.md"
+
+            echo "rendered $out/importers.md  (${n} packages)"
+          fi
+
       - name: Publish to the badges branch
         env:
           BR: ${{ inputs.badges_branch }}
@@ -172,9 +290,13 @@ jobs:
             git checkout --orphan "$BR"
           fi
 
-          # The badges branch holds ONLY the generated SVGs.
+          # The badges branch holds ONLY generated artifacts.
           git rm -rf . >/dev/null 2>&1 || true
           cp "$RUNNER_TEMP/badges/"*.svg .
+          # intentional: importers.md is the only .md ever produced here, and it
+          # exists only when the importers badge is enabled. Its absence is the
+          # normal case, not a failure.
+          cp "$RUNNER_TEMP/badges/"*.md . 2>/dev/null || true
           git add -A
 
           if git diff --cached --quiet; then
