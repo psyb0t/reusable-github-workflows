@@ -4,6 +4,30 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.40.0 — 2026-08-08
+
+An unreadable importers page can no longer discard the other three badges.
+
+- **`create-badges.yml`: the importers scrape-drift check now warns and renders
+  `unknown` instead of exiting 1.** When the extracted link count disagreed with
+  the count the page declares, the step failed the whole job — but coverage,
+  version and license have **already been rendered to disk** by that point, and
+  the publish step never runs, so all three were thrown away and CI went red
+  over a badge that was not the subject of the run.
+
+  This is the same reasoning the fetch-failed and no-section cases already
+  followed, and the comment above the check already said so ("failing the job
+  there would redden CI over a badge and block every OTHER badge in the same
+  run"). The cross-check itself was the one path that still contradicted it.
+
+  What has not changed is the thing the check exists for: a drifted scrape still
+  never prints a number. `unknown` and a count are different claims, and the
+  badge only ever makes the one it can support.
+
+  Observed for real on `slogging v1.7.0`: coverage 95.9%, license MIT and
+  version v1.7.0 all rendered, then the importers step exited and the run went
+  red with nothing published from it.
+
 ## v0.39.0 — 2026-08-08
 
 Mirroring and archiving skip Dependabot branches instead of failing on them.

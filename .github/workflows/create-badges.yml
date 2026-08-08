@@ -271,12 +271,35 @@ jobs:
             n="${#imps[@]}"
 
             # Disagreement means the selectors drifted from the markup. Render
-            # nothing rather than a number that is quietly wrong -- the whole
+            # "unknown" rather than a number that is quietly wrong -- the whole
             # point of a badge is that nobody re-derives it by hand.
+            #
+            # This warns rather than failing, for the same reason the fetch and
+            # parse cases above do: coverage, version and license have ALREADY
+            # been rendered by the time this runs, and exiting here threw all
+            # three away and reddened CI over a badge that is not even the
+            # subject of the run. One unreadable third-party page must not cost
+            # the other badges. What it must never do is print a number.
+            drifted=0
+
             if [ "$n" -ne "$declared" ]; then
-              echo "::error::extracted ${n} importers but the page declares ${declared} -- scrape drifted, refusing to render" >&2
-              exit 1
+              echo "::warning::extracted ${n} importers but the page declares ${declared} for ${mod} -- scrape drifted, rendering unknown" >&2
+              mkbadge "imported by" "unknown" "#9f9f9f" "$out/importers.svg"
+              {
+                printf '# Imported by\n\n'
+                printf 'The importer count for `%s` could not be read reliably from\n' "$mod"
+                printf '[pkg.go.dev](%s) on this run: the page declares **%s** package(s)\n' "$url" "$declared"
+                printf 'but **%s** link(s) could be extracted, so the scrape has drifted from\n' "$n"
+                printf 'the markup.\n\n'
+                printf 'Reported as `unknown` rather than a number, because a count that\n'
+                printf 'disagrees with the page it came from is worse than no count at all.\n'
+              } > "$out/importers.md"
+              echo "rendered $out/importers.svg  (unknown -- scrape drift)"
+              drifted=1
             fi
+
+            if [ "$drifted" -eq 0 ]; then
+
             if [ "$n" -gt 0 ]; then color="#007ec6"; else color="#9f9f9f"; fi
             mkbadge "imported by" "$n" "$color" "$out/importers.svg"
 
@@ -317,6 +340,8 @@ jobs:
             } > "$out/importers.md"
 
               echo "rendered $out/importers.md  (${n} packages)"
+
+            fi
             fi
           fi
 
