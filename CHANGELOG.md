@@ -4,6 +4,32 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.38.3 — 2026-08-08
+
+The imported-by badge failed the whole badges job on two perfectly normal
+pages. Found the moment it ran against a second repository.
+
+- **"No known importers" is a FACT, not a failure.** pkg.go.dev states a total
+  in prose only when there IS one; a module nothing imports says
+  `No known importers for this package` and no count at all. The first cut read
+  that as an unreadable page and failed, so a zero-importer module could never
+  get a badge.
+- **A module pkg.go.dev has not crawled yet has no importedby section at all.**
+  A fresh rename hits this. Failing there reddens CI over a badge and takes
+  every OTHER badge in the run down with it, since the job is all-or-nothing.
+- Three outcomes are now distinguished instead of two: a countable page renders
+  the cross-checked number; `No known importers` renders **0**; anything else
+  renders **`unknown`** in grey and emits a warning rather than failing. A
+  fetch failure is also a warning now, not an error.
+- What did NOT change is the thing worth keeping: `unknown` is never rendered
+  as `0`. "Nothing imports this" and "I could not tell" are different facts,
+  and printing the second as the first would look exactly like data. A declared
+  count that disagrees with the extracted links is still a hard error, because
+  that is real drift.
+- Verified against all three shapes before shipping: a module with importers
+  (renders the count), one with none (renders 0), and one not yet indexed
+  (renders unknown).
+
 ## v0.38.2 — 2026-08-08
 
 Documentation catch-up. The imported-by badge shipped across v0.37.0–v0.38.1

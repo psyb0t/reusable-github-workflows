@@ -203,25 +203,52 @@ jobs:
             # on a schedule, a wrongly-rendered 0 would OVERWRITE a real count
             # and look like data. So: fail loudly, keep the previously committed
             # badge, and never invent a number.
+            # Three outcomes, and conflating any two of them is how this lies:
+            #   a countable page  -> render the number, cross-checked
+            #   "no known importers" -> render 0, which is a FACT not a failure
+            #   anything else     -> render "unknown", never a number
+            #
+            # A module pkg.go.dev has not crawled yet (a fresh rename, say) hits
+            # the third case. Failing the job there would redden CI over a badge
+            # and block every OTHER badge in the same run, so it warns instead.
+            # What it must never do is print 0 for "I could not tell".
+            importers_state=unknown
+
             if ! html="$(curl -sS --fail --location --max-time 30 "$url")"; then
-              echo "::error::pkg.go.dev fetch failed for ${mod} -- keeping the existing badge" >&2
-              exit 1
+              echo "::warning::pkg.go.dev fetch failed for ${mod} -- rendering the count as unknown" >&2
+              html=""
             fi
 
-            # Confirms we are on the page we think we are BEFORE trusting a zero.
-            if ! printf '%s' "$html" | grep -q 'Imported By'; then
-              echo "::error::pkg.go.dev importedby markup changed -- refusing to render a count" >&2
-              exit 1
+            declared=""
+
+            if printf '%s' "$html" | grep -qi 'No known importers'; then
+              importers_state=counted
+              declared=0
+            elif printf '%s' "$html" | grep -q 'Imported By'; then
+              declared="$(printf '%s' "$html" | grep -oiE '[0-9,]+ packages?' | head -1 | grep -oE '[0-9,]+' | tr -d ,)"
+              if [ -n "$declared" ]; then
+                importers_state=counted
+              else
+                echo "::warning::found the importedby section but no declared count for ${mod}" >&2
+              fi
+            else
+              echo "::warning::no importedby section for ${mod} -- not indexed yet?" >&2
             fi
 
-            # The page states its own total in prose. Parsing that as well as
-            # the links turns the scrape into a self-checking instrument: two
-            # independent reads of the same page that must agree.
-            declared="$(printf '%s' "$html" | grep -oiE '[0-9,]+ packages?' | head -1 | grep -oE '[0-9,]+' | tr -d ,)"
-            if [ -z "$declared" ]; then
-              echo "::error::could not read the declared package count -- refusing to render" >&2
-              exit 1
+            if [ "$importers_state" != "counted" ]; then
+              mkbadge "imported by" "unknown" "#9f9f9f" "$out/importers.svg"
+              {
+                printf '# Imported by\n\n'
+                printf 'The importer count for `%s` could not be read from\n' "$mod"
+                printf '[pkg.go.dev](%s) on this run.\n\n' "$url"
+                printf 'This is reported as `unknown` rather than `0` on purpose: a module that\n'
+                printf 'nothing imports and a page that could not be parsed are different facts,\n'
+                printf 'and rendering the second as the first would look exactly like data.\n'
+              } > "$out/importers.md"
+              echo "rendered $out/importers.svg  (unknown)"
             fi
+
+            if [ "$importers_state" = "counted" ]; then
 
             # The `@version` strip matters: the page links the module's own
             # current version as github.com/<mod>@vX.Y.Z, which a bare prefix
@@ -289,7 +316,8 @@ jobs:
               fi
             } > "$out/importers.md"
 
-            echo "rendered $out/importers.md  (${n} packages)"
+              echo "rendered $out/importers.md  (${n} packages)"
+            fi
           fi
 
       - name: Publish to the badges branch
