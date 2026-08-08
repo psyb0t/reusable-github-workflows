@@ -4,6 +4,25 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.38.4 — 2026-08-08
+
+The README described the behaviour v0.38.3 replaced.
+
+- The imported-by section still said a fetch failure, a missing section marker
+  or an unreadable count all **fail the job**. As of v0.38.3 those warn and
+  render `unknown`; only a declared-vs-extracted disagreement still fails. One
+  release of drift, on the exact paragraph that explains why the thing can be
+  trusted — the worst place to be wrong.
+- Replaced with the three outcomes as a table, plus why the third warns rather
+  than fails (the job is all-or-nothing, so failing over a badge takes the
+  coverage, version and license badges with it).
+- The release gate that was supposed to catch this only checks that every
+  workflow INPUT appears in the README — input coverage, not behavioural
+  accuracy. It now also asserts that the README mentions `unknown` whenever the
+  workflow can render it. That is a narrow coupling rather than a general fix:
+  behavioural drift is not something a grep can fully police, and pretending
+  otherwise would be its own kind of lie.
+
 ## v0.38.3 — 2026-08-08
 
 The imported-by badge failed the whole badges job on two perfectly normal

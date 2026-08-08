@@ -636,7 +636,21 @@ Four badge kinds ship today; add more by dropping another block into the workflo
 
 **The imported-by badge is a blast-radius indicator, not an adoption metric**, and the distinction decides how strictly you have to version the module. A library with no stars can still be imported by dozens of packages — nobody stars a logging or error dependency, they just import it — but if every one of those is your own repo, that means "I use my own library", not that the public depends on it. The `— **external**` mark and the count above the table are what tell those apart.
 
-pkg.go.dev has no API for this, so the count only exists in the page's HTML. That matters because it makes a changed selector, a failed fetch, and "genuinely nobody imports it" all produce the same answer — and on a schedule a wrongly-rendered `0` would overwrite a real count while still looking like data. So the scrape reads the total **twice by different means** — the links it extracts, and the total the page states in prose — and renders only if the two agree. A fetch failure, a missing section marker, an unreadable declared count, or any disagreement **fails the job** and leaves the previously committed badge untouched. It lists only public packages pkg.go.dev has crawled, and the crawl lags publication by days; `importers.md` says so in the file.
+pkg.go.dev has no API for this, so the count only exists in the page's HTML — which means a changed selector, a failed fetch, and "genuinely nobody imports it" would all produce the same answer unless they're told apart. On a schedule a wrongly-rendered `0` would overwrite a real count while still looking like data.
+
+So the job distinguishes **three** outcomes:
+
+| page | badge | on failure |
+|---|---|---|
+| states a total | that number, **cross-checked** against the links it extracts | disagreement is a hard **error** — that's real drift |
+| says `No known importers` | `0` | — |
+| anything else (not indexed yet, fetch failed, no count) | `unknown` in grey | a **warning**, not a failure |
+
+The cross-check is the interesting part: the total is read twice by different means — the links, and the count stated in prose — and a number is rendered only if the two agree.
+
+`unknown` is never rendered as `0`. "Nothing imports this" and "I could not tell" are different facts. And the third row warns rather than fails because this job is all-or-nothing: failing there would take the coverage, version and license badges down with it over a badge. A freshly renamed module sits in that state for days until pkg.go.dev crawls it.
+
+It lists only public packages pkg.go.dev has crawled, and the crawl lags publication by days; `importers.md` says so in the file.
 
 The coverage value typically arrives via an artifact an earlier job uploaded — pair this with `go-workflow.yml`'s `coverage_file` input (below), which uploads the percentage file your `test_command` produced. The badges job writes ONLY the SVGs to the `badges` branch; its commit is marked `[skip ci]` so publishing badges never re-triggers a pipeline. Invocations targeting the same caller repository and `badges_branch` are serialized, so default-branch pushes (coverage freshness) and tag pushes (the released version) can safely update the same branch.
 
