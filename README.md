@@ -640,15 +640,17 @@ pkg.go.dev has no API for this, so the count only exists in the page's HTML — 
 
 So the job distinguishes **three** outcomes:
 
-| page | badge | on failure |
+| page | badge | when it can't be trusted |
 |---|---|---|
-| states a total | that number, **cross-checked** against the links it extracts | disagreement is a hard **error** — that's real drift |
+| states a total | that number, **cross-checked** against the links it extracts | disagreement renders `unknown` and **warns** — real drift, but a count that disagrees with its own page is worse than none |
 | says `No known importers` | `0` | — |
 | anything else (not indexed yet, fetch failed, no count) | `unknown` in grey | a **warning**, not a failure |
 
 The cross-check is the interesting part: the total is read twice by different means — the links, and the count stated in prose — and a number is rendered only if the two agree.
 
-`unknown` is never rendered as `0`. "Nothing imports this" and "I could not tell" are different facts. And the third row warns rather than fails because this job is all-or-nothing: failing there would take the coverage, version and license badges down with it over a badge. A freshly renamed module sits in that state for days until pkg.go.dev crawls it.
+`unknown` is never rendered as `0`. "Nothing imports this" and "I could not tell" are different facts.
+
+**No row fails the job**, drift included. This step is all-or-nothing: coverage, version and license are already rendered by the time the importers page is read, and the publish step runs once at the end — so exiting here threw those three away and reddened the run over a badge that wasn't its subject. A freshly renamed module sits in the `unknown` state for days until pkg.go.dev crawls it, and that is not a build failure. What none of the rows will do is print a number the page doesn't support.
 
 It lists only public packages pkg.go.dev has crawled, and the crawl lags publication by days; `importers.md` says so in the file.
 

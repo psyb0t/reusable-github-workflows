@@ -4,6 +4,20 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.40.1 — 2026-08-08
+
+README catch-up for v0.40.0. No workflow changed.
+
+- The imported-by outcome table still said a cross-check disagreement was
+  "a hard **error**", and the paragraph under it still said only "the third row
+  warns rather than fails". v0.40.0 changed both: drift now renders `unknown`
+  and warns, so **no row fails the job**.
+- Shipping v0.40.0 without this was the same defect that release fixed, one
+  layer up — a document describing behaviour the code no longer has. The table
+  now states what the workflow does, and the paragraph explains why none of the
+  rows fail: the other three badges are already rendered when the importers page
+  is read, and the publish step runs once at the end.
+
 ## v0.40.0 — 2026-08-08
 
 An unreadable importers page can no longer discard the other three badges.
