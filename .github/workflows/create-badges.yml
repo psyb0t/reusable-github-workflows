@@ -79,6 +79,11 @@ on:
         required: false
         default: ""
         type: string
+      importers_own_owners:
+        description: "Owners to treat as 'yours' when flagging external importers, space/comma separated (empty = this repo's owner). Set it if you publish under more than one account or org."
+        required: false
+        default: ""
+        type: string
       badges_branch:
         description: "Branch the generated SVGs are committed to"
         required: false
@@ -123,6 +128,7 @@ jobs:
           DO_VERSION: ${{ inputs.version }}
           DO_IMPORTERS: ${{ inputs.importers }}
           IMPORTERS_MODULE: ${{ inputs.importers_module }}
+          IMPORTERS_OWN_OWNERS: ${{ inputs.importers_own_owners }}
           COVERAGE_FILE: ${{ inputs.coverage_file }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -184,7 +190,12 @@ jobs:
           if [ "$DO_IMPORTERS" = "true" ]; then
             mod="${IMPORTERS_MODULE:-github.com/$REPO}"
             url="https://pkg.go.dev/${mod}?tab=importedby"
-            owner="${REPO%%/*}"
+            # "External" means "not one of YOUR owners", derived from the caller
+            # rather than hardcoded, so this works for anyone. Defaults to the
+            # repo's own owner; override when you publish under more than one
+            # account or org, otherwise your own second org reads as external.
+            owners_raw="${IMPORTERS_OWN_OWNERS:-${REPO%%/*}}"
+            owners_set=" $(printf '%s' "$owners_raw" | tr ',;' '  ' | tr -s ' ' | sed 's/^ *//; s/ *$//') "
 
             # pkg.go.dev has no API for this; the count only exists in the HTML.
             # That makes every failure below indistinguishable from "nobody
@@ -257,12 +268,12 @@ jobs:
               if [ "$n" -eq 0 ]; then
                 printf 'No importers found.\n'
               else
-                ext="$(printf '%s\n' "${imps[@]}" | awk -F/ -v o="$owner" '$2 != o' | wc -l)"
-                printf '**%s** of them are outside `%s`.\n\n' "$ext" "$owner"
+                ext="$(printf '%s\n' "${imps[@]}" | awk -F/ -v own="$owners_set" 'index(own, " " $2 " ") == 0' | wc -l)"
+                printf '**%s** of them are outside%s.\n\n' "$ext" "$(printf '%s' "$owners_set" | sed 's/^ //; s/ $//; s/ /`, `/g; s/^/ `/; s/$/`/')"
                 printf '| repository | packages | |\n|---|---:|---|\n'
                 printf '%s\n' "${imps[@]}" \
-                  | awk -F/ -v o="$owner" '
-                      { r = $1"/"$2"/"$3; c[r]++; if ($2 != o) x[r] = 1 }
+                  | awk -F/ -v own="$owners_set" '
+                      { r = $1"/"$2"/"$3; c[r]++; if (index(own, " " $2 " ") == 0) x[r] = 1 }
                       END { for (k in c) printf "%d\t%s\t%s\n", c[k], k, (k in x ? "external" : "") }
                     ' \
                   | sort -rn \

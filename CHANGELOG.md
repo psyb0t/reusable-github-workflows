@@ -4,6 +4,20 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.38.0 — 2026-08-08
+
+`create-badges.yml` gains `importers_own_owners`, so the external-importer flag
+works for anyone publishing under more than one account.
+
+- The "external" mark was already generic — it derives the owner from
+  `github.repository`, so it has always meant "not YOUR org" rather than naming
+  any particular one. What it was not is **multi**-owner: anyone publishing
+  under both a personal account and an org would see their own second org
+  flagged external. `importers_own_owners` takes a space- or comma-separated
+  list; empty keeps the previous behaviour of using this repo's owner.
+- Matching is on whole owner segments, not substrings, so `acme` does not
+  swallow `acme-labs`.
+
 ## v0.37.0 — 2026-08-08
 
 `create-badges.yml` gains an opt-in imported-by badge for Go modules, plus the
