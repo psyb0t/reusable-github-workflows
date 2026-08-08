@@ -183,7 +183,15 @@ concurrency:
 
 jobs:
   codeberg:
-    if: inputs.codeberg_enabled
+    # Dependabot-triggered runs are handed NO repository secrets, by design, so
+    # the mirror token is empty and the push fails every time. Skipping is the
+    # only correct outcome: there is nothing to mirror from a dependency-bump
+    # branch, and a job that fails on every bump forever trains people to ignore
+    # a red mirror -- which is the one place a real failure needs to be visible.
+    if: >-
+      inputs.codeberg_enabled &&
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.ref_name, 'dependabot/')
     name: Codeberg
     runs-on: ${{ inputs.runs_on }}
     permissions:
@@ -356,7 +364,11 @@ jobs:
           echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to Codeberg"
 
   gitlab:
-    if: inputs.gitlab_enabled
+    # See the codeberg job: dependabot runs get no secrets, so this can only fail.
+    if: >-
+      inputs.gitlab_enabled &&
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.ref_name, 'dependabot/')
     name: GitLab
     runs-on: ${{ inputs.runs_on }}
     permissions:
@@ -634,7 +646,11 @@ jobs:
           echo "mirrored $(git for-each-ref --format='%(refname)' refs/heads | wc -l) branches, $(git for-each-ref --format='%(refname)' refs/tags | wc -l) tags to GitLab"
 
   gitee:
-    if: inputs.gitee_enabled
+    # See the codeberg job: dependabot runs get no secrets, so this can only fail.
+    if: >-
+      inputs.gitee_enabled &&
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.ref_name, 'dependabot/')
     name: Gitee
     runs-on: ${{ inputs.runs_on }}
     permissions:

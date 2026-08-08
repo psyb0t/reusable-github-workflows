@@ -4,6 +4,35 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.39.0 — 2026-08-08
+
+Mirroring and archiving skip Dependabot branches instead of failing on them.
+
+- **`git-mirror.yml` and `archive.yml` now skip when the run came from
+  Dependabot** — every job gained
+  `github.actor != 'dependabot[bot]' && !startsWith(github.ref_name, 'dependabot/')`
+  alongside its existing enable flag.
+
+  GitHub withholds repository secrets from Dependabot-triggered runs by design,
+  so the mirror and archive tokens arrive empty and the push is refused. Every
+  dependency bump produced a red run, forever, for a reason no one could act on.
+  Across the fleet that was the **only** remaining source of red on Dependabot
+  branches — the test pipelines pass on those branches, which is the entire
+  point of them.
+
+  Skipping is the correct outcome rather than a workaround: there is nothing
+  worth mirroring from a bump branch, and a job that fails on every bump trains
+  people to ignore a red mirror — which is the one place a genuine mirror
+  failure has to stay visible.
+
+  The guard is on the actor *and* the branch prefix. The actor is what actually
+  causes the secrets to be withheld; the branch prefix also covers a re-push of
+  a bump branch by a human, where the run would otherwise proceed with the same
+  broken assumptions.
+
+- Corrected the README's `max_new_items_per_day` default from `10` to `5`, which
+  is what `archive.yml` has declared since the rate-limit margin was widened.
+
 ## v0.38.4 — 2026-08-08
 
 The README described the behaviour v0.38.3 replaced.

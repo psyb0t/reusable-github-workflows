@@ -137,7 +137,14 @@ permissions: {}
 
 jobs:
   wayback:
-    if: inputs.wayback_enabled
+    # Dependabot-triggered runs get NO repository secrets, by design. Callers
+    # normally gate this job to the default branch and tags anyway, so it should
+    # never reach a bump branch -- this is the belt to that pair of braces, for
+    # a caller that forgets.
+    if: >-
+      inputs.wayback_enabled &&
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.ref_name, 'dependabot/')
     name: Wayback Machine
     runs-on: ${{ inputs.runs_on }}
     permissions:
@@ -327,7 +334,11 @@ jobs:
           fi
 
   software-heritage:
-    if: inputs.software_heritage_enabled
+    # See the wayback job: dependabot runs get no secrets.
+    if: >-
+      inputs.software_heritage_enabled &&
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.ref_name, 'dependabot/')
     name: Software Heritage
     runs-on: ${{ inputs.runs_on }}
     permissions:
@@ -406,7 +417,11 @@ jobs:
           fi
 
   internet-archive-item:
-    if: inputs.item_upload_enabled
+    # See the wayback job: dependabot runs get no secrets.
+    if: >-
+      inputs.item_upload_enabled &&
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.ref_name, 'dependabot/')
     name: archive.org item
     runs-on: ${{ inputs.runs_on }}
     permissions:
