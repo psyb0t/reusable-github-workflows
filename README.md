@@ -219,7 +219,7 @@ jobs:
 
 ### Multi-target builds
 
-Ship multiple image variants from one pipeline run by passing `build_targets` (JSON array). Each entry produces one image tagged with `tag_suffix`. Three flavors:
+Ship multiple image variants from one pipeline run by passing `build_targets` (JSON array). Each entry produces one image tagged as `tag_prefix` + the moving or release tag + `tag_suffix`. Four flavors:
 
 **Multi-stage from one Dockerfile** (e.g. `full` + `minimal` stages):
 
@@ -245,6 +245,22 @@ with:
       {"file": "Dockerfile.cuda", "tag_suffix": "-cuda"}
     ]
 ```
+
+**Tag-prefixed companion image** (a controller with a worker/cell image in the
+same repository):
+
+```yaml
+with:
+  repository_name: psyb0t/myapp
+  build_targets: |
+    [
+      {"file": "Dockerfile",      "tag_suffix": ""},
+      {"file": "cell/Dockerfile", "tag_prefix": "cell-"}
+    ]
+```
+
+This publishes `:latest` and `:cell-latest` from the default branch, then
+`:vX.Y.Z` and `:cell-vX.Y.Z` from a release tag.
 
 **Per-image platforms override** (CPU image multi-arch, CUDA image amd64-only):
 
@@ -281,7 +297,9 @@ sharing a stage still build in parallel; stages run in ascending order.
 
 | Field | Required | Description |
 |---|---|---|
-| `tag_suffix` | yes | Appended to the image tag. Empty string = unsuffixed (`:latest` / `:v1.2.3`). |
+| `tag_prefix` | no | Prepended to the image tag. `"cell-"` produces `:cell-latest` / `:cell-v1.2.3`. |
+| `tag_suffix` | no | Appended to the image tag. `"-minimal"` produces `:latest-minimal` / `:v1.2.3-minimal`. |
+| `build_args` | no | Newline-delimited non-secret Docker build arguments for this target. Never pass credentials or tokens. |
 | `target` | no | Dockerfile stage. Omit for multi-Dockerfile builds. |
 | `file` | no | Dockerfile path. Defaults to `Dockerfile`. |
 | `platforms` | no | Platforms for this entry. Falls back to `inputs.target_platforms`. |

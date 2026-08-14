@@ -20,7 +20,7 @@ on:
         default: "linux/amd64,linux/arm64"
 
       build_targets:
-        description: 'JSON array of build targets. Each entry: {"tag_suffix": "", "target": "stage_name" (optional), "file": "Dockerfile.foo" (optional), "platforms": "linux/amd64" (optional, overrides input.target_platforms), "stage": 0 (optional build wave, default 0)}. Empty tag_suffix = :latest. Use "target" for multi-stage builds from one Dockerfile, "file" for multi-Dockerfile repos, "platforms" for per-image arch overrides (e.g. CUDA image amd64-only while CPU image stays multi-arch). Use "stage" to ORDER builds: all stage-0 targets build+push before any stage-1 target starts, so an image whose Dockerfile does `FROM <repo>:latest` inherits the freshly-pushed base instead of the previously-published one. Targets without "stage" are stage 0 (all parallel — unchanged). Examples: [{"target":"full","tag_suffix":""},{"target":"minimal","tag_suffix":"-minimal"}] or [{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.full","tag_suffix":"-full","stage":1}]'
+        description: 'JSON array of build targets. Each entry: {"tag_prefix": "" (optional), "tag_suffix": "" (optional), "build_args": "NAME=value" (optional), "target": "stage_name" (optional), "file": "Dockerfile.foo" (optional), "platforms": "linux/amd64" (optional, overrides input.target_platforms), "stage": 0 (optional build wave, default 0)}. A tag is :<tag_prefix><latest-or-release><tag_suffix>; omitted prefix and suffix produce :latest / :vX.Y.Z. Use "target" for multi-stage builds from one Dockerfile, "file" for multi-Dockerfile repos, "platforms" for per-image arch overrides (e.g. CUDA image amd64-only while CPU image stays multi-arch), and "build_args" only for non-secret Docker build arguments. Use "stage" to ORDER builds: all stage-0 targets build+push before any stage-1 target starts, so an image whose Dockerfile does `FROM <repo>:latest` inherits the freshly-pushed base instead of the previously-published one. Targets without "stage" are stage 0 (all parallel — unchanged). Examples: [{"target":"full","tag_suffix":""},{"target":"minimal","tag_suffix":"-minimal"}] or [{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.full","tag_suffix":"-full","stage":1}]'
         required: false
         type: string
         default: ""
@@ -429,9 +429,10 @@ jobs:
           file: ${{ matrix.file || 'Dockerfile' }}
           platforms: ${{ matrix.platforms || inputs.target_platforms }}
           target: ${{ matrix.target || '' }}
-          tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
+          build-args: ${{ matrix.build_args || '' }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -444,9 +445,10 @@ jobs:
           file: ${{ matrix.file || 'Dockerfile' }}
           platforms: ${{ matrix.platforms || inputs.target_platforms }}
           target: ${{ matrix.target || '' }}
-          tags: ${{ inputs.repository_name }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ github.ref_name }}${{ matrix.tag_suffix || '' }}
+          build-args: ${{ matrix.build_args || '' }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -509,9 +511,10 @@ jobs:
           file: ${{ matrix.file || 'Dockerfile' }}
           platforms: ${{ matrix.platforms || inputs.target_platforms }}
           target: ${{ matrix.target || '' }}
-          tags: ${{ inputs.repository_name }}:latest${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
+          build-args: ${{ matrix.build_args || '' }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -524,9 +527,10 @@ jobs:
           file: ${{ matrix.file || 'Dockerfile' }}
           platforms: ${{ matrix.platforms || inputs.target_platforms }}
           target: ${{ matrix.target || '' }}
-          tags: ${{ inputs.repository_name }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_suffix }}
+          tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ github.ref_name }}${{ matrix.tag_suffix || '' }}
+          build-args: ${{ matrix.build_args || '' }}
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -569,7 +573,7 @@ jobs:
         id: scan
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
-          image: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix }}
+          image: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix || '' }}
           fail-build: ${{ inputs.scan_fail_build }}
           severity-cutoff: ${{ inputs.scan_severity }}
           vex: ${{ inputs.scan_vex_file }}
@@ -584,7 +588,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
-          category: grype${{ matrix.tag_suffix }}
+          category: grype${{ matrix.tag_prefix || matrix.tag_suffix || '' }}
 
   update-dockerhub-description:
     needs: [build-multi, build-multi-wave1]

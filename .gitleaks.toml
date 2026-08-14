@@ -1,0 +1,12 @@
+title = "reusable-github-workflows secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignored local research and telemetry"
+paths = [
+  '''(^|/)\.research_files(?:/|$)''',
+  '''(^|/)\.telemetry(?:/|$)''',
+  '''(^|/)CLAUDE\.md$''',
+]

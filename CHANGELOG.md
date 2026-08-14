@@ -4,6 +4,16 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.41.0 — 2026-08-14
+
+Multi-target image names can now be shaped from both sides of the moving or
+release tag.
+
+- `docker-image-workflow.yml` multi-target entries now accept an optional
+  `tag_prefix`, so a companion image can publish `:cell-latest` and
+  `:cell-vX.Y.Z` instead of only suffix-shaped tags. Entries can also provide
+  non-secret `build_args`, passed only to that target's Docker build.
+
 ## v0.40.1 — 2026-08-08
 
 README catch-up for v0.40.0. No workflow changed.
