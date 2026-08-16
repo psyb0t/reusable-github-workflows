@@ -4,6 +4,16 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.41.1 — 2026-08-16
+
+ClawHub package metadata errors are now reported as repository errors, not
+mislabelled as a temporary ClawHub outage.
+
+- `clawhub-publish.yml` recognizes the specific missing
+  `openclaw.extensions` declaration before matching generic `/convex/` stack
+  paths. The publish job now fails immediately with the actionable package
+  error instead of retrying it as infrastructure trouble.
+
 ## v0.41.0 — 2026-08-14
 
 Multi-target image names can now be shaped from both sides of the moving or

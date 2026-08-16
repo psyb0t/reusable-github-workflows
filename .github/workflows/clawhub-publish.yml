@@ -373,7 +373,7 @@ jobs:
 
             if printf '%s' "$err" | grep -qiE "plugin-inspector-error|could not inspect"; then
               : # the inspector itself broke; fall through to the upstream match
-            elif printf '%s' "$err" | grep -qiE "blocked publish|validation failed|breakage"; then
+            elif printf '%s' "$err" | grep -qiE "blocked publish|validation failed|breakage|package\.json must declare openclaw\.extensions"; then
               return 1
             fi
 
@@ -651,7 +651,7 @@ jobs:
 
             if printf '%s' "$err" | grep -qiE "plugin-inspector-error|could not inspect"; then
               : # the inspector itself broke; fall through to the upstream match
-            elif printf '%s' "$err" | grep -qiE "blocked publish|validation failed|breakage"; then
+            elif printf '%s' "$err" | grep -qiE "blocked publish|validation failed|breakage|package\.json must declare openclaw\.extensions"; then
               return 1
             fi
 
