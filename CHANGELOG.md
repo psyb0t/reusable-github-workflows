@@ -4,6 +4,17 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.41.3 — 2026-08-17
+
+Fix `:latest` going stale for repositories that build more than one image.
+
+- `docker-image-workflow.yml`'s concurrency group now includes
+  `inputs.repository_name`. A caller that invokes the workflow twice in one
+  pipeline (e.g. an app image plus a sidecar image) previously shared a single
+  `workflow-ref` group, so on a branch push the two calls cancelled each other
+  and one image's `:latest` push — which only runs on the default branch — was
+  killed. Both builds now run, so each image's `:latest` updates.
+
 ## v0.41.2 — 2026-08-17
 
 Archive-provider outages no longer make caller release pipelines look broken.
