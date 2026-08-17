@@ -4,6 +4,17 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.41.2 — 2026-08-17
+
+Archive-provider outages no longer make caller release pipelines look broken.
+
+- `mirror-and-archive.yml` now invokes the independent archive workflow with
+  `fail_on_error: false`. Archive failures remain visible as workflow warnings,
+  while source pushes, tests, and image releases retain their own real gates.
+- `archive.yml` now handles an unavailable or non-JSON archive.org metadata
+  response as an unknown item state instead of feeding an HTML error page to
+  `jq` under `set -e`.
+
 ## v0.41.1 — 2026-08-16
 
 ClawHub package metadata errors are now reported as repository errors, not

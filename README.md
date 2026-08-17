@@ -922,6 +922,12 @@ Pushes the caller repo into public archives so it survives the platform it lives
 - **Every request retries with exponential backoff**, because the expected failure is "too many requests right now", not "no". `max_attempts` (default 5) with `backoff_seconds` (default 30) gives 30s, 60s, 120s, 240s between tries — about seven minutes of patience. That figure is sized to a real constraint: an archive.org account gets **three concurrent Save Page Now sessions**, so several repositories archiving at once queue behind each other and answer `429` until one frees up. The previous 3 × 10s gave up while the queue was still draining. Only a `429`, a `404`, a `5xx`, or a timeout is retried — any other `4xx` means the URL itself is unacceptable and waiting won't change that answer. **`404` is in that set** even though it normally means "gone": Save Page Now answers `404` when it's under load and abandons the fetch, and the URL passed here is always the caller's own page, which exists.
 - **If it still can't archive after all that, the job goes red.** A green run that archived nothing is a lie. Going red costs nothing here because the job is deliberately independent — nothing `needs:` it, so it reports the truth without blocking the release or any other job. Set `fail_on_error: false` if you'd rather not see it.
 
+The bundled `mirror-and-archive.yml` caller sets `fail_on_error: false`: it is
+an auxiliary durability job attached to a source push, so a provider outage is
+reported as a warning without turning the caller's release pipeline red. Call
+`archive.yml` directly with its default when an archive confirmation is a gate
+for your own workflow.
+
 **Save Page Now caps captures per URL per day** — five, currently — separately from the account's daily quota, which can be almost untouched while this one refuses. It answers HTTP 200 with no job id and `status_ext=error:too-many-daily-captures`. That counts as archived, because it is: the snapshots exist and another would add nothing. Every *other* jobless 200 is a real refusal and still fails.
 
 **Wayback is slow** — a single save measured **~110 seconds** — hence the generous `url_timeout_seconds` (default 180) and a deliberately short URL list rather than every page. A timeout is *not* treated as a refusal: Wayback frequently finishes the save after the client has given up, so a retry there is a second chance, not a correction.

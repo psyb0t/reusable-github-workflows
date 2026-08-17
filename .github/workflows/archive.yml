@@ -463,7 +463,24 @@ jobs:
           # died mid-upload never wrote its revision, so the next run sees a
           # mismatch and retries -- the ABSENCE of the revision is the failure
           # record, which is why no separate retry flag exists.
-          state=$(curl -sS "https://archive.org/metadata/${identifier}" || echo '{}')
+          # archive.org can send an HTML error page for a transient 5xx. Do not
+          # pipe that into jq under `set -e`: an unavailable metadata probe is
+          # not proof that the item does not exist, and the upload retry below
+          # is the operation that can establish the real outcome.
+          state='{}'
+          if state_response=$(curl -sS -w '\n%{http_code}' \
+            "https://archive.org/metadata/${identifier}" 2>&1); then
+            state_status=$(printf '%s' "${state_response}" | tail -n1)
+            state_body=$(printf '%s' "${state_response}" | sed '$d')
+            if [ "${state_status}" = "200" ] && \
+              printf '%s' "${state_body}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+              state="${state_body}"
+            else
+              echo "::warning::archive.org metadata probe returned HTTP ${state_status}; treating the item state as unknown"
+            fi
+          else
+            echo "::warning::archive.org metadata probe did not complete; treating the item state as unknown"
+          fi
           item_exists=$(printf '%s' "${state}" | jq -r 'if (.metadata // empty) then "yes" else "no" end')
           uploaded_rev=$(printf '%s' "${state}" | jq -r '.metadata.sourcerevision // empty')
 

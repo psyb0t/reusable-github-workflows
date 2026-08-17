@@ -30,6 +30,11 @@ jobs:
     uses: psyb0t/reusable-github-workflows/.github/workflows/archive.yml@master
     with:
       capture_outlinks: true
+      # Mirrors and archives are durability copies, not release gates. Their
+      # providers can rate-limit or return transient 5xx responses long after
+      # the source push itself succeeded; surface that in the job output
+      # without making every caller's release pipeline red.
+      fail_on_error: false
     secrets:
       archiveorg_access_key: ${{ secrets.ARCHIVEORG_ACCESS_KEY }}
       archiveorg_secret_key: ${{ secrets.ARCHIVEORG_SECRET_KEY }}
