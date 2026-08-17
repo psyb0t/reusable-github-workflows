@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.41.4 — 2026-08-17
+
+GitHub Releases created by `go-workflow.yml` are now titled with just the tag,
+dropping the `Release ` prefix.
+
+- The `Create GitHub Release` step now sets `name: ${{ tag_name }}` instead of
+  `Release ${{ tag_name }}`, so a release shows e.g. `v1.2.3` rather than
+  `Release v1.2.3`. The Docker and Python workflows already used the bare tag.
+
 ## v0.41.3 — 2026-08-17
 
 Fix `:latest` going stale for repositories that build more than one image.
