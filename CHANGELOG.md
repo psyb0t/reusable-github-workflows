@@ -4,6 +4,23 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.42.0 (2026-08-20)
+
+New `code-workflow.yml` and `release-workflow.yml`; `make-checks.yml` deprecated.
+
+- `code-workflow.yml` supersedes `make-checks.yml`. It chains a repo's own build
+  / lint / test / sec / generate commands (no toolchain setup), gates the rest on
+  `build_command`, uploads the coverage artifact, uploads the security SARIF that
+  `sec_command` writes to the Security tab, and fails on codegen drift after
+  `generate_command`. All the real work stays in the repo's Makefile.
+- `release-workflow.yml` cuts a tag's GitHub release (tag plus notes, no
+  artifacts) via the `gh` CLI, for repos that split checks / image publish /
+  release across separate flows.
+- `make-checks.yml` is deprecated (superseded by `code-workflow.yml`) and will be
+  removed in a later release once its callers migrate. New pipelines should use
+  `code-workflow.yml`, setting `lint_command` / `test_command` explicitly since it
+  defaults every command to empty.
+
 ## v0.41.4 — 2026-08-17
 
 GitHub Releases created by `go-workflow.yml` are now titled with just the tag,

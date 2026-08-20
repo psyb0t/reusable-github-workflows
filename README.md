@@ -47,7 +47,8 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`docker-image-workflow.yml`](#docker-image-workflowyml) | Buildx multi-arch / multi-target Docker Hub publish + SBOM/provenance + Grype scan → Security tab + GitHub Release. |
 | [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
-| [`make-checks.yml`](#make-checksyml) | Run a repo's own lint / test commands with no toolchain setup — for projects whose toolchain lives in their container. |
+| [`code-workflow.yml`](#code-workflowyml) | Chain a repo's own build / lint / test / sec / generate commands (no toolchain setup), upload coverage + a security SARIF, check codegen drift. For projects whose toolchain lives in their container. |
+| [`release-workflow.yml`](#release-workflowyml) | Cut a GitHub release for a tag (tag + notes, no artifacts) via the gh CLI. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
@@ -461,48 +462,58 @@ jobs:
 
 No `pypi_api_token` secret needed — PyPI authenticates the workflow via OIDC. The `id-token: write` permission on the calling job is required.
 
-## make-checks.yml
+## code-workflow.yml
 
-Runs a repo's own lint + test commands. No language, no toolchain setup — for projects that carry their toolchain in a container (typically the ones that ship a Docker image), where `setup-go` / `setup-python` would install something nothing uses.
+Chains a repo's own build / lint / test / sec / generate commands. No language, no toolchain setup: the toolchain lives in the repo's container and its Makefile owns everything past checkout. This flow is a dumb runner plus the CI-only plumbing (upload the coverage artifact, upload the security SARIF, check for codegen drift). All the real work is a `make X` the repo defines.
 
-- **One job, not a lint job plus a test job.** Splitting them would run in parallel, but each runner would build the repo's dev image from scratch — nothing shares a layer cache between them — so the dominant cost gets paid twice to save a step that is usually seconds.
-- `lint_command`, `test_command` and `dep_command` accept `-` (preferred) or `""` to skip that step, same convention as [`go-workflow.yml`](#go-workflowyml).
-- `dep_command` is **off by default**, unlike the language workflows. When the toolchain lives in a container, the dependency env is built inside that container and can't be handed to a later step on the host, so a host-side dependency step has nothing to carry forward.
-- Set `coverage_file` to upload the coverage artifact a downstream [`create-badges.yml`](#create-badgesyml) job reads. Leave it empty and nothing is uploaded — enabling `coverage: true` on the badges job without producing that file fails the badges job.
-
-**Call it as its own job and gate the build on it** (`needs: [checks]`). Folding the same commands into [`docker-image-workflow.yml`](#docker-image-workflowyml) as extra steps looks simpler but isn't: every build job there is gated to `master` / `main` / tags, so the checks would only run at the moment you're already publishing — never on a feature branch, which is where a failing test is worth catching.
+- Every `*_command` accepts `-` (preferred) or `""` to skip that step.
+- `build_command` runs FIRST and gates the rest: if it fails, lint / test / sec / generate are skipped, so the run fails fast on the real problem. Leave it empty and there is no gate (lint runs first).
+- `sec_command` should write a SARIF to `sarif_file`; the flow uploads it to Security > Code scanning under `sarif_category` (so a repo with both a Go and a Python leg does not overwrite itself). Needs `security-events: write` on the caller job.
+- `generate_command` just runs the generators; the flow then fails on `git status` drift. Ordered last because it rewrites the tree.
+- Set `coverage_file` and the file is uploaded as the artifact a downstream [`create-badges.yml`](#create-badgesyml) job reads.
 
 ### Inputs
 
 | Input | Type | Default | Description |
 |---|---|---|---|
-| `lint_command` | string | `"make lint"` | Lint command. Set to `-` to skip the step. |
-| `test_command` | string | `"make test"` | Test command. Set to `-` to skip the step. |
-| `dep_command` | string | `""` | Dependency setup, run before lint and test. Off by default. |
-| `coverage_file` | string | `""` | If set, upload this file (produced by `test_command`, containing the coverage percentage) as an artifact for a downstream `create-badges.yml` job. |
-| `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. Must match what the badges job downloads. |
+| `build_command` | string | `""` | Compile gate, e.g. `make build`. Runs first; its failure skips the rest. `-` / `""` skips it. |
+| `lint_command` | string | `""` | Lint command, e.g. `make lint`. `-` / `""` skips it. |
+| `test_command` | string | `""` | Test command, e.g. `make test-coverage`. `-` / `""` skips it. |
+| `sec_command` | string | `""` | Security scan, e.g. `make sec`; writes a SARIF to `sarif_file`. `-` / `""` skips it. |
+| `generate_command` | string | `""` | Codegen, e.g. `make generate`; the flow then fails on drift. `-` / `""` skips it. |
+| `coverage_file` | string | `""` | If set, uploaded as `coverage_artifact` for a downstream `create-badges.yml` job. |
+| `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. |
+| `sarif_file` | string | `""` | Path `sec_command` wrote SARIF to. If set, uploaded to the Security tab. |
+| `sarif_category` | string | `"code"` | Code-scanning category, so multiple legs in one repo do not collide. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
+| `debug` | boolean | `false` | Print the workflow context. |
 
 ### Security note
 
-`lint_command`, `test_command` and `dep_command` are interpolated into shell scripts, exactly as in [`go-workflow.yml`](#go-workflowyml). Callers control these strings, which is equivalent to arbitrary code execution on the runner with whatever secrets and permissions the caller workflow exposes. Only call this workflow from trusted repos with branch protection on the workflow files.
+`build_command`, `lint_command`, `test_command`, `sec_command` and `generate_command` are interpolated into shell scripts, exactly as in [`go-workflow.yml`](#go-workflowyml). Callers control these strings, which is arbitrary code execution on the runner with whatever secrets and permissions the caller exposes. Only call this from trusted repos with branch protection on the workflow files.
 
 ### Example
 
-Checks on every push; the image build and the badges wait on them.
+Checks on every push; the image build and badges wait on them. The caller grants `security-events: write` so the sec SARIF reaches the Security tab.
 
 ```yaml
-name: pipeline
-on: [push]
-
 jobs:
-  checks:
+  code:
     permissions:
       contents: read
-    uses: psyb0t/reusable-github-workflows/.github/workflows/make-checks.yml@master
+      security-events: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/code-workflow.yml@master
+    with:
+      lint_command: "make lint"
+      test_command: "make test-coverage"
+      sec_command: "make sec"
+      generate_command: "make generate"
+      coverage_file: coverage-percent.txt
+      sarif_file: sec.sarif
+      sarif_category: go
 
   docker:
-    needs: [checks]
+    needs: [code]
     if: github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -515,27 +526,36 @@ jobs:
       dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 ```
 
-### Example with a coverage badge
+## release-workflow.yml
 
-`test_command` has to write the percentage to `coverage_file` itself; this workflow only uploads what it finds there.
+Cuts a GitHub release for a tag: tag plus notes, no artifacts, since these repos ship Docker images and pip-installable packages rather than bare binaries. Uses the pre-installed `gh` CLI, not a third-party action. Pair it with [`code-workflow.yml`](#code-workflowyml) and [`docker-image-workflow.yml`](#docker-image-workflowyml) and gate it on them with `needs:`.
+
+- Runs only on `refs/tags/*`.
+- `changelog_file`: its contents become the release body. Empty means `gh` generates notes from the commits since the last tag.
+- A tag matching `prerelease_match` (default `alpha` / `beta` / `rc`) is flagged as a prerelease.
+- Idempotent: a re-run of a tag whose release already exists is a no-op.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `changelog_file` | string | `""` | File whose contents become the release body. Empty = generated notes. |
+| `prerelease_match` | string | `"(alpha\|beta\|rc)"` | Regex of tag substrings that mark a prerelease. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. |
+| `debug` | boolean | `false` | Print the workflow context. |
+
+### Example
 
 ```yaml
 jobs:
-  checks:
-    permissions:
-      contents: read
-    uses: psyb0t/reusable-github-workflows/.github/workflows/make-checks.yml@master
-    with:
-      test_command: "make coverage-percent"
-      coverage_file: coverage-percent.txt
-
-  badges:
-    needs: [checks]
+  release:
+    needs: [code, docker]
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
-    uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
+    uses: psyb0t/reusable-github-workflows/.github/workflows/release-workflow.yml@master
     with:
-      coverage: true
+      changelog_file: CHANGELOG.md
 ```
 
 ## clawhub-publish.yml

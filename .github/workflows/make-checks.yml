@@ -1,5 +1,10 @@
 name: Make Checks
 
+# DEPRECATED: superseded by code-workflow.yml, which does the same command
+# chaining plus a build gate, sec + SARIF upload, and codegen-drift checking.
+# Kept working for existing callers; it will be removed in a later release once
+# they migrate. New pipelines should use code-workflow.yml.
+#
 # Lint and test for repos whose toolchain lives in their own container rather
 # than on the runner -- typically the ones that ship a Docker image. There is no
 # setup-go / setup-python step here on purpose: the runner already has a Docker

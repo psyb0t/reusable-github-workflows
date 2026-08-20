@@ -1,0 +1,191 @@
+name: Code Workflow
+
+# SECURITY: build_command, lint_command, test_command, sec_command and
+# generate_command are interpolated directly into shell scripts. Callers control
+# these strings and effectively get arbitrary code execution on the runner with
+# whatever secrets/permissions the caller workflow grants. Only call this
+# workflow from trusted repos with branch protection on the workflow files.
+#
+# This flow is a dumb command runner. It knows nothing about Go or any language.
+# It runs the commands you pass (which do the real work in the repo's own
+# dev-image via docker-in-docker), uploads the coverage file for the badge job,
+# and uploads the sec SARIF to the Security tab. The toolchain and every tool
+# version live in the repo's Makefile / dev-image, never here. No language setup,
+# no version pins, no release.
+#
+# DISABLING A STEP: every *_command accepts "-" (preferred) or "" to skip it.
+# "-" is the documented form because an empty string in a caller's YAML is
+# indistinguishable from a templating accident, while "-" reads as a deliberate
+# opt-out.
+
+on:
+  workflow_call:
+    inputs:
+      build_command:
+        description: "Command that compiles the repo (e.g. 'make build'). Runs FIRST and gates the rest: if it fails, lint/test/sec/generate are skipped. '' or '-' skips it."
+        required: false
+        default: ""
+        type: string
+      lint_command:
+        description: "Lint command (e.g. 'make lint'). '' or '-' skips it."
+        required: false
+        default: ""
+        type: string
+      test_command:
+        description: "Test command (e.g. 'make test-coverage'). '' or '-' skips it."
+        required: false
+        default: ""
+        type: string
+      sec_command:
+        description: "Security scan command (e.g. 'make sec'). It should write a SARIF to sarif_file for upload. '' or '-' skips it."
+        required: false
+        default: ""
+        type: string
+      generate_command:
+        description: "Codegen command (e.g. 'make generate'). Just runs the generators; the flow then fails on git drift (a committed generated file that no longer matches). Ordered LAST because it rewrites the tree. '' or '-' skips it."
+        required: false
+        default: ""
+        type: string
+      coverage_file:
+        description: "Path the test command wrote, containing just the coverage percentage. If set, uploaded as coverage_artifact for the badge job."
+        required: false
+        default: ""
+        type: string
+      coverage_artifact:
+        description: "Artifact name for coverage_file (matches what create-badges downloads)."
+        required: false
+        default: "coverage"
+        type: string
+      sarif_file:
+        description: "Path the sec command wrote SARIF to. If set, uploaded to Security > Code scanning. Needs security-events: write on the caller job."
+        required: false
+        default: ""
+        type: string
+      sarif_category:
+        description: "Code-scanning category, so multiple legs (go, python) in one repo do not overwrite each other in the Security tab."
+        required: false
+        default: "code"
+        type: string
+      runs_on:
+        description: "Runner to use (e.g. ubuntu-latest, self-hosted)."
+        required: false
+        default: "ubuntu-latest"
+        type: string
+      debug:
+        description: "Emit a debug job that prints the workflow context and inputs."
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions: {}
+
+jobs:
+  debug-workflow:
+    name: Debug Info
+    runs-on: ${{ inputs.runs_on }}
+    permissions: {}
+    if: inputs.debug
+    steps:
+      - name: Debug context
+        run: |
+          echo "::group::Context"
+          echo "github.ref: ${{ github.ref }}"
+          echo "github.sha: ${{ github.sha }}"
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "::endgroup::"
+          echo "::group::Commands"
+          echo "build_command: ${{ inputs.build_command }}"
+          echo "lint_command: ${{ inputs.lint_command }}"
+          echo "test_command: ${{ inputs.test_command }}"
+          echo "sec_command: ${{ inputs.sec_command }}"
+          echo "generate_command: ${{ inputs.generate_command }}"
+          echo "coverage_file: ${{ inputs.coverage_file }}"
+          echo "sarif_file: ${{ inputs.sarif_file }} (category ${{ inputs.sarif_category }})"
+          echo "::endgroup::"
+
+  code:
+    name: Code
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+      security-events: write # upload the sec SARIF to the repo Security tab
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # build is the gate: if the code does not compile, lint and test fail at the
+      # same step anyway, so run it first and skip the rest when it fails.
+      - name: Build
+        id: build
+        if: inputs.build_command != '' && inputs.build_command != '-'
+        run: ${{ inputs.build_command }}
+
+      # Each step below runs when the build was green OR skipped (outcome is not
+      # 'failure'), so one check failing does not hide the next, but all skip when
+      # the build actually failed. That fails the run fast on the real problem.
+      - name: Lint
+        if: always() && steps.build.outcome != 'failure' && inputs.lint_command != '' && inputs.lint_command != '-'
+        run: ${{ inputs.lint_command }}
+
+      - name: Test
+        if: always() && steps.build.outcome != 'failure' && inputs.test_command != '' && inputs.test_command != '-'
+        run: ${{ inputs.test_command }}
+
+      - name: Upload coverage artifact
+        if: always() && inputs.coverage_file != '' && hashFiles(inputs.coverage_file) != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.coverage_artifact }}
+          path: ${{ inputs.coverage_file }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Security scan
+        if: always() && steps.build.outcome != 'failure' && inputs.sec_command != '' && inputs.sec_command != '-'
+        run: ${{ inputs.sec_command }}
+
+      # Upload whatever SARIF the sec command wrote, even when it gated the build,
+      # so findings reach the Security tab either way. continue-on-error: the
+      # upload 403s if the caller did not grant security-events: write, and that
+      # must not fail an otherwise-green run.
+      - name: Upload SARIF to the Security tab
+        if: always() && inputs.sarif_file != '' && hashFiles(inputs.sarif_file) != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          sarif_file: ${{ inputs.sarif_file }}
+          category: ${{ inputs.sarif_category }}
+
+      # generate runs LAST because it rewrites the tree; earlier and lint/test
+      # would see regenerated code instead of the committed code. The command
+      # just runs the generators (whatever they are: go, node, web); the drift
+      # check is generic and lives here, not duplicated in every project.
+      - name: Generate and check drift
+        if: always() && steps.build.outcome != 'failure' && inputs.generate_command != '' && inputs.generate_command != '-'
+        run: |
+          set -euo pipefail
+
+          ${{ inputs.generate_command }}
+
+          # git status --porcelain rather than git diff --exit-code: diff only
+          # sees tracked files, so a generator emitting a NEW uncommitted file
+          # would pass silently. Porcelain catches modified and untracked alike,
+          # and still ignores anything in .gitignore.
+          changes="$(git status --porcelain)"
+          if [ -z "${changes}" ]; then
+            echo "Generated files are up to date."
+            exit 0
+          fi
+
+          echo "::error::Generated files are out of date. Run the generator locally and commit the result."
+          echo "::group::Changed paths"
+          echo "${changes}"
+          echo "::endgroup::"
+          echo "::group::Diff"
+          git diff
+          echo "::endgroup::"
+          exit 1

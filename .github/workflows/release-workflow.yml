@@ -1,0 +1,98 @@
+name: Release Workflow
+
+# Cut a GitHub release for a tag. Tag plus notes, nothing else: we ship Docker
+# images and pip-installable packages, not bare binaries, so the release attaches
+# no build artifacts. Uses the pre-installed gh CLI, not a third-party action.
+#
+# Pair it with code-workflow (checks) and docker-image-workflow (image publish):
+# those run the checks and publish the artifacts, this one cuts the tag release
+# once they are green (the caller wires the `needs:`).
+
+on:
+  workflow_call:
+    inputs:
+      changelog_file:
+        description: "File whose contents become the release body. Empty means gh generates notes from the commits since the last tag."
+        required: false
+        default: ""
+        type: string
+      prerelease_match:
+        description: "Case-insensitive regex of tag substrings that mark a prerelease (so vX.Y.Z-rc1 is flagged as pre-release)."
+        required: false
+        default: "(alpha|beta|rc)"
+        type: string
+      runs_on:
+        description: "Runner to use (e.g. ubuntu-latest, self-hosted)."
+        required: false
+        default: "ubuntu-latest"
+        type: string
+      debug:
+        description: "Emit a debug job that prints the workflow context."
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  debug-workflow:
+    name: Debug Info
+    runs-on: ${{ inputs.runs_on }}
+    permissions: {}
+    if: inputs.debug
+    steps:
+      - name: Debug context
+        run: |
+          echo "github.ref: ${{ github.ref }}"
+          echo "github.ref_name: ${{ github.ref_name }}"
+          echo "github.sha: ${{ github.sha }}"
+          echo "changelog_file: ${{ inputs.changelog_file }}"
+          echo "prerelease_match: ${{ inputs.prerelease_match }}"
+
+  release:
+    name: GitHub Release
+    runs-on: ${{ inputs.runs_on }}
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          CHANGELOG_FILE: ${{ inputs.changelog_file }}
+          PRERELEASE_MATCH: ${{ inputs.prerelease_match }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent: a re-run of the same tag must not fail on an existing
+          # release (a rerun replays the tag ref). If it already exists, done.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; nothing to do."
+            exit 0
+          fi
+
+          args=(--title "${TAG}")
+
+          if printf '%s' "${TAG}" | grep -qiE "${PRERELEASE_MATCH}"; then
+            args+=(--prerelease)
+          fi
+
+          # A repo-provided changelog file wins; otherwise gh writes notes from
+          # the commits since the previous tag.
+          if [ -n "${CHANGELOG_FILE}" ] && [ -f "${CHANGELOG_FILE}" ]; then
+            args+=(--notes-file "${CHANGELOG_FILE}")
+          else
+            args+=(--generate-notes)
+          fi
+
+          gh release create "${TAG}" "${args[@]}"
