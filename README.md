@@ -472,6 +472,8 @@ Chains a repo's own build / lint / test / sec / generate commands. No language, 
 - `generate_command` just runs the generators; the flow then fails on `git status` drift. Ordered last because it rewrites the tree.
 - Set `coverage_file` and the file is uploaded as the artifact a downstream [`create-badges.yml`](#create-badgesyml) job reads.
 
+**Required caller permission:** the `code` job declares `security-events: write` (for the SARIF upload), and a reusable workflow cannot request more than the caller grants. So the calling job MUST grant `security-events: write` even when it sets no `sec_command`. Omit it and the run fails at startup with no logs.
+
 ### Inputs
 
 | Input | Type | Default | Description |

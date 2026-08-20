@@ -4,6 +4,13 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.42.1 (2026-08-20)
+
+Docs: `code-workflow.yml`'s caller must grant `security-events: write` even
+without a `sec_command`, or the run fails at startup. The workflow declares that
+permission for the SARIF upload, and a reusable workflow cannot exceed the
+caller's grant.
+
 ## v0.42.0 (2026-08-20)
 
 New `code-workflow.yml` and `release-workflow.yml`; `make-checks.yml` deprecated.
