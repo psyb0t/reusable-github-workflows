@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.45.0 (2026-08-21)
+
+`code-workflow.yml` grants `actions: read` on the `Code` job so the SARIF upload
+can attach its analysis to the workflow run without a "Resource not accessible by
+integration" annotation on private repositories.
+
+- The `Code` job now requests `actions: read` alongside `contents: read` and
+  `security-events: write`. `github/codeql-action/upload-sarif` reads the
+  workflow run to attach the code-scanning analysis; on a private repo that call
+  needs `actions: read` or it 403s (non-fatal, but it leaves a warning
+  annotation). Callers that upload SARIF from a private repo must also grant
+  `actions: read` on the calling job.
+
 ## v0.44.0 (2026-08-21)
 
 `issue-pull.yml` now keeps confidential GitLab issues confidential when it
