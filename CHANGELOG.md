@@ -4,6 +4,18 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.44.0 (2026-08-21)
+
+`issue-pull.yml` now keeps confidential GitLab issues confidential when it
+relays them to public GitHub repositories.
+
+- A confidential source issue becomes a generic GitHub issue that links back
+  to GitLab. It omits the source title, author, body, attachments, and reply
+  contents. Source replies become generic bot comments with the same boundary.
+- If an already-relayed public source issue becomes confidential, the next run
+  replaces its copied title/body and removes only this workflow's old bot
+  replies. Human GitHub comments remain untouched.
+
 ## v0.43.0 (2026-08-21)
 
 `issue-pull.yml` now mirrors source issue replies, not just issue state.

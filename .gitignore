@@ -36,6 +36,7 @@ CLAUDE.md
 git-update.sh
 ANUSTIMES.md
 .anustimes/
+.secaudit/
 .brutal_reviews/
 .telemetry/
 reusable-flow-refactor.md

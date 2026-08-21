@@ -56,7 +56,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
-| [`issue-pull.yml`](#issue-pullyml) | Copy mirror issues and replies into GitHub with linked source identities, then track source edits and state changes. |
+| [`issue-pull.yml`](#issue-pullyml) | Copy mirror issues and replies into GitHub with linked source identities, track source edits and state changes, and preserve confidential GitLab issues as generic source links. |
 | [`archive.yml`](#archiveyml) | Push the repo into the Wayback Machine (pages), Software Heritage (git history) and archive.org (a browsable item of the source itself). |
 
 ## Pinning
@@ -889,7 +889,7 @@ Copies issues and replies from the Codeberg and GitLab mirrors into GitHub, so t
 
 **Direction is the design.** The workflow reads mirrors and writes only to GitHub. The built-in `GITHUB_TOKEN` is scoped to the caller repository and expires with the job. A mirror-side bot would require a GitHub token stored on a third-party forge.
 
-**The relayed issue and replies are authored by `github-actions[bot]`, never by you.** An issue that claims to be written by you but was not is false, and it also notifies you about something you did not write. Every imported issue and reply names its original author as a link to that person's GitLab or Codeberg profile, with a direct source link beside it. A bot-authored write also does not re-trigger workflows, so there is no loop to guard against.
+**The relayed issue and replies are authored by `github-actions[bot]`, never by you.** An issue that claims to be written by you but was not is false, and it also notifies you about something you did not write. Public imports name their original author as a link to that person's GitLab or Codeberg profile, with a direct source link beside it. Confidential GitLab imports keep only the source issue link. A bot-authored write also does not re-trigger workflows, so there is no loop to guard against.
 
 **State lives in the relayed issues themselves.** Each issue carries an invisible source marker. Each imported reply carries a marker for its source comment ID. The next run uses those markers to create missing replies and update an already imported reply when its source text changes. A run that dies halfway picks up again without a cache or state file.
 
@@ -897,13 +897,16 @@ What propagates, and what deliberately doesn't:
 
 | | |
 |---|---|
-| Issue opened or edited on a mirror | → opened or refreshed here, labelled `relayed` + `codeberg`/`gitlab`, with the original author linked |
-| Reply added or edited on a mirror | → created or updated here, with the original author and source reply linked |
+| Public issue opened or edited on a mirror | → opened or refreshed here, labelled `relayed` + `codeberg`/`gitlab`, with the original author linked |
+| Public reply added or edited on a mirror | → created or updated here, with the original author and source reply linked |
+| Confidential GitLab issue or reply | → generic GitHub breadcrumb with only the source issue link. No title, author, body, attachment, reply text, or comment author is copied. The source link still requires GitLab permission. |
 | Root-relative source attachment link | → rewritten to the source forge, never accidentally to GitHub |
 | Issue closed or reopened on a mirror | → closed or reopened here, with a state note and the source link |
 | Reviews and labels | Not synced. The mirror only reads issues and issue replies. |
 
 **Issue lists fall back to anonymous reads.** An under-scoped token can turn a public request into a `403`, so the workflow retries without it and warns. GitLab can restrict public note reads, though. Set `gitlab_token` with `api` scope when you want GitLab replies mirrored. Without it, the issue and its state still sync, but the workflow warns and leaves replies alone.
+
+If a previously public GitLab issue becomes confidential, the next run replaces the copied title and body with the generic breadcrumb and removes only the bot-authored replies imported from that source. Human GitHub comments stay put.
 
 **Jitter prevents an account-wide cron burst.** `jitter_seconds` defaults to 600 and sleeps before the first request. Set it to `0` for manual runs.
 

@@ -114,7 +114,7 @@ jobs:
           # Normalised shape both platforms are flattened into, so the relay
           # logic below never has to care which one an issue came from:
           #   {origin, url, source_id, title, body, author, author_url, state,
-          #    comments, opened, closed}
+          #    comments, opened, closed, confidential}
           foreign='[]'
 
           # These issues are public, so the token buys nothing but a higher rate
@@ -192,7 +192,7 @@ jobs:
           }
 
           write_issue_body() {
-            local item="$1" destination="$2" author author_url body opened origin url
+            local item="$1" destination="$2" author author_url body opened origin url confidential
 
             author=$(printf '%s' "${item}" | jq -r '.author')
             author_url=$(printf '%s' "${item}" | jq -r '.author_url')
@@ -200,6 +200,15 @@ jobs:
             opened=$(printf '%s' "${item}" | jq -r '.opened')
             origin=$(printf '%s' "${item}" | jq -r '.origin')
             url=$(printf '%s' "${item}" | jq -r '.url')
+            confidential=$(printf '%s' "${item}" | jq -r '.confidential')
+
+            if [ "${confidential}" = "true" ]; then
+              printf 'A confidential issue exists on %s. Its details stay private at the source.\n\n[Open the confidential source issue](%s)\n\n<!-- issue-pull:%s -->\n' \
+                "${origin}" "${url}" "${url}" >"${destination}"
+
+              return
+            fi
+
             body=$(rewrite_root_relative_markdown_links "${body}" "${url}")
 
             printf 'Opened by **[%s @%s](%s)** on %s.\nSource: [%s issue](%s)\n\n%s\n\n<!-- issue-pull:%s -->\n' \
@@ -222,13 +231,14 @@ jobs:
           }
 
           sync_source_comments() {
-            local number="$1" item="$2" origin source_id source_url comments comment marker
+            local number="$1" item="$2" origin source_id source_url confidential comments comment marker
             local comment_id author author_url comment_url created body existing existing_id
-            local issue_comments
+            local issue_comments stale_marker stale_comment_id
 
             origin=$(printf '%s' "${item}" | jq -r '.origin')
             source_id=$(printf '%s' "${item}" | jq -r '.source_id')
             source_url=$(printf '%s' "${item}" | jq -r '.url')
+            confidential=$(printf '%s' "${item}" | jq -r '.confidential')
 
             case "${origin}" in
               Codeberg)
@@ -281,8 +291,53 @@ jobs:
             issue_comments=$(gh api --paginate --slurp \
               "repos/${SOURCE}/issues/${number}/comments?per_page=100" | jq -c 'add // []')
 
+            if [ "${confidential}" = "true" ]; then
+              # A previously public issue may become confidential. Remove only
+              # imported bot replies from that source, never a human's comment.
+              stale_marker="<!-- issue-pull-comment:${origin}:${source_id}:"
+            else
+              # The reverse transition replaces generic relay notes with the
+              # normal, source-attributed form.
+              stale_marker="<!-- issue-pull-confidential-comment:${origin}:${source_id}:"
+            fi
+
+            while IFS= read -r stale_comment_id; do
+              gh api --method DELETE "repos/${SOURCE}/issues/comments/${stale_comment_id}" >/dev/null
+              comments_removed=$((comments_removed + 1))
+            done < <(printf '%s' "${issue_comments}" | jq -r --arg marker "${stale_marker}" '
+              .[]
+              | select(
+                  .user.login == "github-actions[bot]"
+                  and (.body != null and (.body | contains($marker)))
+                )
+              | .id
+            ')
+
+            if [ "${confidential}" = "true" ]; then
+              comments=$(printf '%s' "${comments}" | jq -c 'map({id})')
+            fi
+
             while IFS= read -r comment; do
               comment_id=$(printf '%s' "${comment}" | jq -r '.id')
+
+              if [ "${confidential}" = "true" ]; then
+                marker="<!-- issue-pull-confidential-comment:${origin}:${source_id}:${comment_id} -->"
+                printf 'A confidential-source reply was posted. Its details stay private at the source.\n\n[Open the confidential source issue](%s)\n\n%s\n' \
+                  "${source_url}" "${marker}" >"${relay_tmp}/comment.md"
+                jq -n --rawfile body "${relay_tmp}/comment.md" '{body: $body}' >"${relay_tmp}/comment.json"
+
+                existing=$(printf '%s' "${issue_comments}" | jq -c --arg marker "${marker}" \
+                  'map(select(.body != null and (.body | contains($marker)))) | first // empty')
+
+                if [ -z "${existing}" ]; then
+                  gh api --method POST "repos/${SOURCE}/issues/${number}/comments" \
+                    --input "${relay_tmp}/comment.json" >/dev/null
+                  comments_created=$((comments_created + 1))
+                fi
+
+                continue
+              fi
+
               author=$(printf '%s' "${comment}" | jq -r '.author')
               author_url=$(printf '%s' "${comment}" | jq -r '.author_url')
               comment_url=$(printf '%s' "${comment}" | jq -r '.url')
@@ -348,7 +403,8 @@ jobs:
                   state: .state,
                   comments: .comments,
                   opened: .created_at,
-                  closed: (.closed_at // "")
+                  closed: (.closed_at // ""),
+                  confidential: false
                 } ]
               ' --arg base "${CODEBERG_BASE}")
             else
@@ -378,7 +434,8 @@ jobs:
                   state: (if .state == "opened" then "open" else "closed" end),
                   comments: .user_notes_count,
                   opened: .created_at,
-                  closed: (.closed_at // "")
+                  closed: (.closed_at // ""),
+                  confidential: (.confidential // false)
                 } ]
               ')
             else
@@ -400,7 +457,7 @@ jobs:
             --color "ededed" --force >/dev/null
 
           relayed=$(gh issue list -R "${SOURCE}" --label "${LABEL}" --state all --limit 500 \
-            --json number,body,state)
+            --json number,body,state,title)
 
           created=0
           closed=0
@@ -409,14 +466,22 @@ jobs:
           issue_bodies_updated=0
           comments_created=0
           comments_updated=0
+          comments_removed=0
 
           while IFS= read -r item; do
             url=$(printf '%s' "${item}" | jq -r '.url')
             origin=$(printf '%s' "${item}" | jq -r '.origin')
             state=$(printf '%s' "${item}" | jq -r '.state')
+            confidential=$(printf '%s' "${item}" | jq -r '.confidential')
             marker="<!-- issue-pull:${url} -->"
             write_issue_body "${item}" "${relay_tmp}/issue.md"
-            jq -n --rawfile body "${relay_tmp}/issue.md" '{body: $body}' >"${relay_tmp}/issue.json"
+            if [ "${confidential}" = "true" ]; then
+              title="Confidential ${origin} issue received"
+            else
+              title=$(printf '%s' "${item}" | jq -r '.title')
+            fi
+            jq -n --arg title "${title}" --rawfile body "${relay_tmp}/issue.md" \
+              '{title: $title, body: $body}' >"${relay_tmp}/issue.json"
 
             existing=$(printf '%s' "${relayed}" | jq -c --arg m "${marker}" \
               'map(select(.body != null and (.body | contains($m)))) | first // empty')
@@ -430,7 +495,6 @@ jobs:
                 continue
               fi
 
-              title=$(printf '%s' "${item}" | jq -r '.title')
               origin_label="${origin,,}"
               gh label create "${origin_label}" -R "${SOURCE}" --color "ededed" --force >/dev/null
 
@@ -447,8 +511,10 @@ jobs:
             else
               number=$(printf '%s' "${existing}" | jq -r '.number')
               here=$(printf '%s' "${existing}" | jq -r '.state' | tr '[:upper:]' '[:lower:]')
+              existing_title=$(printf '%s' "${existing}" | jq -r '.title')
               printf '%s' "${existing}" | jq -rj '.body' >"${relay_tmp}/existing-issue.md"
-              if ! cmp -s "${relay_tmp}/issue.md" "${relay_tmp}/existing-issue.md"; then
+              if ! cmp -s "${relay_tmp}/issue.md" "${relay_tmp}/existing-issue.md" \
+                || [ "${title}" != "${existing_title}" ]; then
                 gh api --method PATCH "repos/${SOURCE}/issues/${number}" \
                   --input "${relay_tmp}/issue.json" >/dev/null
                 issue_bodies_updated=$((issue_bodies_updated + 1))
@@ -458,6 +524,18 @@ jobs:
             sync_source_comments "${number}" "${item}"
 
             if [ "${state}" = "closed" ] && [ "${here}" = "open" ]; then
+              if [ "${confidential}" = "true" ]; then
+                gh issue comment "${number}" -R "${SOURCE}" --body "$(printf \
+                  'The confidential source issue was closed.\n\n[Open the confidential source issue](%s)' \
+                  "${url}")" >/dev/null
+                gh issue close "${number}" -R "${SOURCE}" --reason completed >/dev/null
+
+                echo "closed #${number} (confidential source)"
+                closed=$((closed + 1))
+
+                continue
+              fi
+
               comments=$(printf '%s' "${item}" | jq -r '.comments')
               opened=$(printf '%s' "${item}" | jq -r '.opened')
               closed_at=$(printf '%s' "${item}" | jq -r '.closed')
@@ -485,7 +563,13 @@ jobs:
 
             if [ "${state}" = "open" ] && [ "${here}" = "closed" ]; then
               gh issue reopen "${number}" -R "${SOURCE}" >/dev/null
-              gh issue comment "${number}" -R "${SOURCE}" --body "Reopened on ${origin}: ${url}" >/dev/null
+              if [ "${confidential}" = "true" ]; then
+                gh issue comment "${number}" -R "${SOURCE}" --body "$(printf \
+                  'The confidential source issue was reopened.\n\n[Open the confidential source issue](%s)' \
+                  "${url}")" >/dev/null
+              else
+                gh issue comment "${number}" -R "${SOURCE}" --body "Reopened on ${origin}: ${url}" >/dev/null
+              fi
 
               echo "reopened #${number} (source ${url})"
               reopened=$((reopened + 1))
@@ -496,4 +580,4 @@ jobs:
             untouched=$((untouched + 1))
           done < <(printf '%s' "${foreign}" | jq -c '.[]')
 
-          echo "relay complete: created=${created} issue_bodies_updated=${issue_bodies_updated} comments_created=${comments_created} comments_updated=${comments_updated} closed=${closed} reopened=${reopened} unchanged=${untouched}"
+          echo "relay complete: created=${created} issue_bodies_updated=${issue_bodies_updated} comments_created=${comments_created} comments_updated=${comments_updated} comments_removed=${comments_removed} closed=${closed} reopened=${reopened} unchanged=${untouched}"
