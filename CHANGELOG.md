@@ -4,6 +4,22 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.43.0 (2026-08-21)
+
+`issue-pull.yml` now mirrors source issue replies, not just issue state.
+
+- Imported issues and replies link to the source author's forge profile and to
+  the original issue or reply. Existing mirrored content is updated in place.
+  Hidden source markers keep the mapping stable without an external database,
+  so repeated runs do not duplicate replies and interrupted runs resume safely.
+- Root-relative Markdown links, including GitLab `/uploads/...` attachments,
+  now resolve against the source forge instead of GitHub after mirroring.
+- GitLab installations that restrict anonymous note reads now document the
+  required `gitlab_token` with `api` scope. Issue and state synchronization
+  still fall back to anonymous reads when available.
+- The README now documents every callable workflow, including the deprecated
+  `make-checks.yml` caller, and its inputs/defaults match the workflow files.
+
 ## v0.42.1 (2026-08-20)
 
 Docs: `code-workflow.yml`'s caller must grant `security-events: write` even

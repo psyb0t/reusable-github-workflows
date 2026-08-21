@@ -1,22 +1,23 @@
 name: Issue Pull
 
-# Copies issues opened on the Codeberg and GitLab mirrors into GitHub, so the
-# mirrors can carry a conversation without anyone having to watch them.
+# Copies issues and replies from the Codeberg and GitLab mirrors into GitHub,
+# so the mirrors can carry a conversation without anyone having to watch them.
 #
 # Direction matters: this only ever READS the mirrors and WRITES here. Nothing
 # is pushed back, so no GitHub credential ever leaves this runner -- the relayed
 # issue is opened with the built-in GITHUB_TOKEN, which is scoped to this repo
 # and expires with the job. Reading public issues needs no token at all; the
-# mirror tokens are used when present purely for the higher rate limit.
+# mirror tokens are used for the higher rate limit and for source-note APIs
+# that do not allow anonymous reads.
 #
 # The relayed issue is authored by github-actions[bot], never by the repo owner:
 # an issue that claims to be written by you but was not is a lie you have to
 # live with forever, and a bot-authored issue does not re-trigger workflows.
 #
-# State lives in the relayed issues themselves. Each carries a marker comment
-# with the source URL, and that is what the next run diffs against -- so there
-# is no cache to evict, no state file to corrupt, and a run that dies halfway
-# simply picks up where it left off.
+# State lives in the relayed issues themselves. Each issue carries a marker
+# with the source URL. Each relayed reply carries its source comment ID. The
+# next run reads those markers, so there is no cache to evict, no state file to
+# corrupt, and a run that dies halfway simply picks up where it left off.
 
 on:
   workflow_call:
@@ -65,11 +66,11 @@ on:
 
     secrets:
       codeberg_token:
-        description: "Optional. Public issues read fine without it; it only raises the rate limit."
+        description: "Optional. Used for authenticated mirror reads; anonymous fallback remains available."
         required: false
 
       gitlab_token:
-        description: "Optional. Public issues read fine without it; it only raises the rate limit."
+        description: "Optional. Needed when GitLab restricts note reads; anonymous fallback remains available."
         required: false
 
 concurrency:
@@ -101,6 +102,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          relay_tmp=$(mktemp -d)
+          trap 'rm -rf "${relay_tmp}"' EXIT
+
           if [ "${JITTER}" -gt 0 ]; then
             delay=$((RANDOM % JITTER))
             echo "sleeping ${delay}s so every repo does not hit the mirrors at once"
@@ -109,7 +113,8 @@ jobs:
 
           # Normalised shape both platforms are flattened into, so the relay
           # logic below never has to care which one an issue came from:
-          #   {origin, url, title, body, author, state, comments, opened, closed}
+          #   {origin, url, source_id, title, body, author, author_url, state,
+          #    comments, opened, closed}
           foreign='[]'
 
           # These issues are public, so the token buys nothing but a higher rate
@@ -158,8 +163,165 @@ jobs:
             printf '%s' "${body}"
           }
 
+          # Both APIs paginate note lists. Keep asking until a short page
+          # arrives, because leaving a reply past page one behind is worse than
+          # relaying no replies at all. The caller supplies a literal
+          # __PAGE__ placeholder so an instance URL never becomes a printf
+          # format string.
+          read_pages() {
+            local url_template="$1" token_header="$2" page=1 all='[]' page_url page_body count
+
+            while :; do
+              page_url="${url_template/__PAGE__/${page}}"
+              if ! page_body=$(read_issues "${page_url}" "${token_header}"); then
+                printf '%s' "${page_body}"
+
+                return 1
+              fi
+
+              all=$(jq -cn --argjson all "${all}" --argjson page "${page_body}" '$all + $page')
+              count=$(printf '%s' "${page_body}" | jq 'length')
+              if [ "${count}" -lt 100 ]; then
+                break
+              fi
+
+              page=$((page + 1))
+            done
+
+            printf '%s' "${all}"
+          }
+
+          write_issue_body() {
+            local item="$1" destination="$2" author author_url body opened origin url
+
+            author=$(printf '%s' "${item}" | jq -r '.author')
+            author_url=$(printf '%s' "${item}" | jq -r '.author_url')
+            body=$(printf '%s' "${item}" | jq -r '.body')
+            opened=$(printf '%s' "${item}" | jq -r '.opened')
+            origin=$(printf '%s' "${item}" | jq -r '.origin')
+            url=$(printf '%s' "${item}" | jq -r '.url')
+            body=$(rewrite_root_relative_markdown_links "${body}" "${url}")
+
+            printf 'Opened by **[%s @%s](%s)** on %s.\nSource: [%s issue](%s)\n\n%s\n\n<!-- issue-pull:%s -->\n' \
+              "${origin}" "${author}" "${author_url}" "${opened}" "${origin}" "${url}" "${body}" "${url}" \
+              >"${destination}"
+          }
+
+          # A source issue commonly links its uploaded proof as /uploads/... .
+          # GitHub would resolve that path against github.com after the copy,
+          # which makes a valid GitLab or Codeberg link point at the wrong site.
+          # Rewrite only Markdown destinations with one leading slash. Network
+          # paths beginning with // stay untouched.
+          rewrite_root_relative_markdown_links() {
+            local body="$1" source_url="$2" source_origin
+
+            source_origin=$(jq -nr --arg source_url "${source_url}" \
+              '$source_url | capture("^(?<origin>https?://[^/]+)").origin')
+            printf '%s' "${body}" | jq -Rrs --arg origin "${source_origin}" \
+              'gsub("\\]\\(/(?!/)"; "](" + $origin + "/")'
+          }
+
+          sync_source_comments() {
+            local number="$1" item="$2" origin source_id source_url comments comment marker
+            local comment_id author author_url comment_url created body existing existing_id
+            local issue_comments
+
+            origin=$(printf '%s' "${item}" | jq -r '.origin')
+            source_id=$(printf '%s' "${item}" | jq -r '.source_id')
+            source_url=$(printf '%s' "${item}" | jq -r '.url')
+
+            case "${origin}" in
+              Codeberg)
+                if ! comments=$(read_pages \
+                  "${CODEBERG_BASE}/api/v1/repos/${OWNER}/${REPO}/issues/${source_id}/comments?limit=100&page=__PAGE__" \
+                  "${cb_header}"); then
+                  echo "::warning::Codeberg comments for ${source_url} could not be read: ${comments}"
+
+                  return 0
+                fi
+
+                comments=$(printf '%s' "${comments}" | jq -c '
+                  map({
+                    id: (.id | tostring),
+                    body: (.body // ""),
+                    author: (.user.login // "unknown"),
+                    author_url: (.user.html_url // ""),
+                    url: (.html_url // ""),
+                    created: (.created_at // "")
+                  })
+                ')
+                ;;
+              GitLab)
+                if ! comments=$(read_pages \
+                  "https://gitlab.com/api/v4/projects/${encoded}/issues/${source_id}/notes?activity_filter=only_comments&sort=asc&order_by=created_at&per_page=100&page=__PAGE__" \
+                  "${gl_header}"); then
+                  echo "::warning::GitLab comments for ${source_url} could not be read: ${comments}"
+
+                  return 0
+                fi
+
+                comments=$(printf '%s' "${comments}" | jq -c --arg source_url "${source_url}" '
+                  map(select(.system != true) | {
+                    id: (.id | tostring),
+                    body: (.body // ""),
+                    author: (.author.username // "unknown"),
+                    author_url: (.author.web_url // ("https://gitlab.com/" + (.author.username // "unknown"))),
+                    url: (.web_url // ($source_url + "#note_" + (.id | tostring))),
+                    created: (.created_at // "")
+                  })
+                ')
+                ;;
+              *)
+                echo "::warning::unsupported source origin: ${origin}"
+
+                return 0
+                ;;
+            esac
+
+            issue_comments=$(gh api --paginate --slurp \
+              "repos/${SOURCE}/issues/${number}/comments?per_page=100" | jq -c 'add // []')
+
+            while IFS= read -r comment; do
+              comment_id=$(printf '%s' "${comment}" | jq -r '.id')
+              author=$(printf '%s' "${comment}" | jq -r '.author')
+              author_url=$(printf '%s' "${comment}" | jq -r '.author_url')
+              comment_url=$(printf '%s' "${comment}" | jq -r '.url')
+              created=$(printf '%s' "${comment}" | jq -r '.created')
+              body=$(printf '%s' "${comment}" | jq -r '.body')
+              body=$(rewrite_root_relative_markdown_links "${body}" "${source_url}")
+              marker="<!-- issue-pull-comment:${origin}:${source_id}:${comment_id} -->"
+
+              printf '**[%s @%s](%s)** commented [on the source issue](%s) at %s.\n\n%s\n\n%s\n' \
+                "${origin}" "${author}" "${author_url}" "${comment_url}" "${created}" "${body}" "${marker}" \
+                >"${relay_tmp}/comment.md"
+              jq -n --rawfile body "${relay_tmp}/comment.md" '{body: $body}' >"${relay_tmp}/comment.json"
+
+              existing=$(printf '%s' "${issue_comments}" | jq -c --arg marker "${marker}" \
+                'map(select(.body != null and (.body | contains($marker)))) | first // empty')
+
+              if [ -z "${existing}" ]; then
+                gh api --method POST "repos/${SOURCE}/issues/${number}/comments" \
+                  --input "${relay_tmp}/comment.json" >/dev/null
+                comments_created=$((comments_created + 1))
+
+                continue
+              fi
+
+              existing_id=$(printf '%s' "${existing}" | jq -r '.id')
+              printf '%s' "${existing}" | jq -rj '.body' >"${relay_tmp}/existing-comment.md"
+              if ! cmp -s "${relay_tmp}/comment.md" "${relay_tmp}/existing-comment.md"; then
+                gh api --method PATCH "repos/${SOURCE}/issues/comments/${existing_id}" \
+                  --input "${relay_tmp}/comment.json" >/dev/null
+                comments_updated=$((comments_updated + 1))
+              fi
+            done < <(printf '%s' "${comments}" | jq -c '.[]')
+          }
+
+          cb_header=""
+          gl_header=""
+          encoded="${OWNER}%2F${REPO}"
+
           if [ "${CODEBERG_ENABLED}" = "true" ]; then
-            cb_header=""
             if [ -n "${CODEBERG_TOKEN}" ]; then
               cb_header="Authorization: token ${CODEBERG_TOKEN}"
             fi
@@ -178,27 +340,26 @@ jobs:
                 $acc + [ .[] | {
                   origin: "Codeberg",
                   url: .html_url,
+                  source_id: (.number | tostring),
                   title: .title,
                   body: (.body // ""),
                   author: .user.login,
+                  author_url: (.user.html_url // ($base + "/" + .user.login)),
                   state: .state,
                   comments: .comments,
                   opened: .created_at,
                   closed: (.closed_at // "")
                 } ]
-              ')
+              ' --arg base "${CODEBERG_BASE}")
             else
               echo "::warning::Codeberg issue list failed, skipping that side: ${cb}"
             fi
           fi
 
           if [ "${GITLAB_ENABLED}" = "true" ]; then
-            gl_header=""
             if [ -n "${GITLAB_TOKEN}" ]; then
               gl_header="PRIVATE-TOKEN: ${GITLAB_TOKEN}"
             fi
-
-            encoded="${OWNER}%2F${REPO}"
 
             # No 2>&1 -- see the Codeberg call above.
             if gl=$(read_issues \
@@ -209,9 +370,11 @@ jobs:
                 $acc + [ .[] | {
                   origin: "GitLab",
                   url: .web_url,
+                  source_id: (.iid | tostring),
                   title: .title,
                   body: (.description // ""),
                   author: .author.username,
+                  author_url: (.author.web_url // ("https://gitlab.com/" + .author.username)),
                   state: (if .state == "opened" then "open" else "closed" end),
                   comments: .user_notes_count,
                   opened: .created_at,
@@ -243,12 +406,17 @@ jobs:
           closed=0
           reopened=0
           untouched=0
+          issue_bodies_updated=0
+          comments_created=0
+          comments_updated=0
 
           while IFS= read -r item; do
             url=$(printf '%s' "${item}" | jq -r '.url')
             origin=$(printf '%s' "${item}" | jq -r '.origin')
             state=$(printf '%s' "${item}" | jq -r '.state')
             marker="<!-- issue-pull:${url} -->"
+            write_issue_body "${item}" "${relay_tmp}/issue.md"
+            jq -n --rawfile body "${relay_tmp}/issue.md" '{body: $body}' >"${relay_tmp}/issue.json"
 
             existing=$(printf '%s' "${relayed}" | jq -c --arg m "${marker}" \
               'map(select(.body != null and (.body | contains($m)))) | first // empty')
@@ -263,30 +431,31 @@ jobs:
               fi
 
               title=$(printf '%s' "${item}" | jq -r '.title')
-              author=$(printf '%s' "${item}" | jq -r '.author')
-              opened=$(printf '%s' "${item}" | jq -r '.opened')
-              body=$(printf '%s' "${item}" | jq -r '.body')
-
-              printf 'Opened by **%s** on %s, %s.\nOriginal: %s\n\n---\n\n%s\n\n%s\n' \
-                "${author}" "${origin}" "${opened}" "${url}" "${body}" "${marker}" >/tmp/relay-body.md
-
               origin_label="${origin,,}"
               gh label create "${origin_label}" -R "${SOURCE}" --color "ededed" --force >/dev/null
 
-              gh issue create -R "${SOURCE}" \
+              created_url=$(gh issue create -R "${SOURCE}" \
                 --title "${title}" \
-                --body-file /tmp/relay-body.md \
+                --body-file "${relay_tmp}/issue.md" \
                 --label "${LABEL}" \
-                --label "${origin_label}" >/dev/null
+                --label "${origin_label}")
+              number="${created_url##*/}"
+              here="open"
 
               echo "relayed ${url}"
               created=$((created + 1))
-
-              continue
+            else
+              number=$(printf '%s' "${existing}" | jq -r '.number')
+              here=$(printf '%s' "${existing}" | jq -r '.state' | tr '[:upper:]' '[:lower:]')
+              printf '%s' "${existing}" | jq -rj '.body' >"${relay_tmp}/existing-issue.md"
+              if ! cmp -s "${relay_tmp}/issue.md" "${relay_tmp}/existing-issue.md"; then
+                gh api --method PATCH "repos/${SOURCE}/issues/${number}" \
+                  --input "${relay_tmp}/issue.json" >/dev/null
+                issue_bodies_updated=$((issue_bodies_updated + 1))
+              fi
             fi
 
-            number=$(printf '%s' "${existing}" | jq -r '.number')
-            here=$(printf '%s' "${existing}" | jq -r '.state' | tr '[:upper:]' '[:lower:]')
+            sync_source_comments "${number}" "${item}"
 
             if [ "${state}" = "closed" ] && [ "${here}" = "open" ]; then
               comments=$(printf '%s' "${item}" | jq -r '.comments')
@@ -327,4 +496,4 @@ jobs:
             untouched=$((untouched + 1))
           done < <(printf '%s' "${foreign}" | jq -c '.[]')
 
-          echo "relay complete: created=${created} closed=${closed} reopened=${reopened} unchanged=${untouched}"
+          echo "relay complete: created=${created} issue_bodies_updated=${issue_bodies_updated} comments_created=${comments_created} comments_updated=${comments_updated} closed=${closed} reopened=${reopened} unchanged=${untouched}"
