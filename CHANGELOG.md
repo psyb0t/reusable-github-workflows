@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.46.0 (2026-08-22)
+
+Reverts the `actions: read` grant added in v0.45.0 on `code-workflow.yml`'s
+`Code` job. A reusable-workflow job may only request permissions the calling job
+grants, so declaring `actions: read` made every caller that does not grant it an
+invalid workflow ("nested job 'code' is requesting actions: read, but is only
+allowed actions: none"). The SARIF upload works without it; on a private repo it
+leaves a non-fatal "Resource not accessible by integration" annotation, which is
+the accepted trade for not breaking callers.
+
+- The `Code` job requests only `contents: read` and `security-events: write`
+  again. Callers do not need to grant `actions: read`.
+
 ## v0.45.0 (2026-08-21)
 
 `code-workflow.yml` grants `actions: read` on the `Code` job so the SARIF upload
