@@ -111,6 +111,7 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 
 > **The Docker Hub token needs Read, Write and Delete.** Pushing an image needs Write. Updating repository metadata, including the description, README, and visibility, needs the Docker Hub scope that also includes Delete. Nothing in this workflow issues a `DELETE`.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
+- Uploads a downloadable SPDX SBOM for each pushed image to the run's **Actions artifacts** (toggle off with `sbom_artifact: false`). This is the plain-file counterpart to `attestations`, which attaches the SBOM to the registry image and needs registry tooling to read.
 - On tag pushes, creates a GitHub Release once the build succeeds.
 - Optionally scans the pushed image with Grype (`anchore/scan-action`) after push and uploads findings as SARIF to **Security → Code scanning**. The artifact and GitHub Release are already published when the scan runs. A finding does not fail the run by default (`scan_fail_build: false`) because base-image CVEs are continuous and often lack a fix. Set `scan_fail_build: true` when a finding must block release. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
 
@@ -168,6 +169,7 @@ Setting `scan_vex_file` makes the scan job check out the repository. That job gr
 | `readme_url_header` | boolean | `true` | Prepend source + project-page links to the long description on Docker Hub. The repo's own README is not modified. |
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
+| `sbom_artifact` | boolean | `true` | Generate a downloadable SPDX SBOM per pushed image (with a pinned, checksum-verified syft) and upload it to the run's Actions artifacts. Independent of `attestations`, which attaches the SBOM to the registry image instead. |
 | `free_disk_space` | boolean | `true` | Free ~25 to 30 GB before build. **Disable for self-hosted runners.** The cleanup wipes shared host directories. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. Use your self-hosted runner label + `free_disk_space: false`. |
 

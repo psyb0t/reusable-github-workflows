@@ -91,6 +91,12 @@ on:
         type: boolean
         default: true
 
+      sbom_artifact:
+        description: "Generate a downloadable SPDX SBOM for each pushed image and upload it to the run's Actions artifacts. Independent of `attestations`, which attaches the SBOM to the image in the registry instead of the run."
+        required: false
+        type: boolean
+        default: true
+
       free_disk_space:
         description: "Free ~25GB on the runner before build (removes Android SDK, .NET, Haskell, CodeQL, large apt pkgs, preloaded docker images). Default true for GitHub-hosted runners. MUST be disabled on self-hosted runners — wipes shared host directories."
         required: false
@@ -111,6 +117,15 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions: {}
+
+# Pinned syft release for the downloadable SBOM jobs, with the sha256 of each
+# linux tarball from its published syft_<version>_checksums.txt. The SBOM jobs
+# verify the download against these before running it, so a re-tagged or tampered
+# release cannot execute on the runner. Bump all three together when upgrading.
+env:
+  SYFT_VERSION: "1.51.0"
+  SYFT_SHA256_LINUX_AMD64: "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f"
+  SYFT_SHA256_LINUX_ARM64: "6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900"
 
 jobs:
   # ══════════════════════════════════════════════
@@ -357,6 +372,56 @@ jobs:
           sarif_file: ${{ steps.scan.outputs.sarif }}
           category: grype
 
+  # A downloadable copy of the SBOM to sit beside the registry attestation, so
+  # the bill of materials is reachable from the run page without any registry or
+  # attestation tooling. syft is fetched as a pinned release binary and its
+  # tarball verified against a committed sha256 before it runs, so a re-tagged or
+  # tampered release cannot execute here. No third-party action is added; the
+  # GitHub-owned upload-artifact publishes the file. This is a leaf job, nothing
+  # gates on it, and every step is best-effort so an SBOM hiccup never reddens an
+  # otherwise-green published run.
+  sbom:
+    needs: build
+    if: always() && needs.build.result == 'success' && inputs.build_targets == '' && inputs.sbom_artifact
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Generate SPDX SBOM with syft
+        id: sbom
+        continue-on-error: true
+        env:
+          IMAGE: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+        run: |
+          set -euo pipefail
+
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          case "$arch" in
+            amd64) want_sha="$SYFT_SHA256_LINUX_AMD64" ;;
+            arm64) want_sha="$SYFT_SHA256_LINUX_ARM64" ;;
+            *) echo "::error::unsupported runner arch ${arch}"; exit 1 ;;
+          esac
+
+          tarball="syft_${SYFT_VERSION}_linux_${arch}.tar.gz"
+          curl -fsSL --retry 3 --retry-all-errors -o "$tarball" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${tarball}"
+          echo "${want_sha}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" syft
+          test -x ./syft || { echo "::error::syft binary not extracted"; exit 1; }
+
+          out="sbom-${IMAGE##*:}.spdx.json"
+          ./syft scan "registry:${IMAGE}" -o "spdx-json=${out}"
+          echo "file=${out}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SBOM artifact
+        if: steps.sbom.outputs.file != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.sbom.outputs.file }}
+          path: ${{ steps.sbom.outputs.file }}
+          if-no-files-found: error
+
   # ══════════════════════════════════════════════
   # Multi-target build (staged: base first, dependents after)
   # ══════════════════════════════════════════════
@@ -589,6 +654,54 @@ jobs:
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
           category: grype${{ matrix.tag_prefix || matrix.tag_suffix || '' }}
+
+  # Per-target SBOM for the multi-target build. Same syft install and best-effort
+  # posture as the single-image `sbom` job; the tag carries the matrix target's
+  # prefix/suffix so each image uploads its own artifact.
+  sbom-multi:
+    needs: [build-multi, build-multi-wave1]
+    if: always() && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped') && inputs.build_targets != '' && inputs.sbom_artifact
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include: ${{ fromJson(inputs.build_targets) }}
+    steps:
+      - name: Generate SPDX SBOM with syft
+        id: sbom
+        continue-on-error: true
+        env:
+          IMAGE: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix || '' }}
+        run: |
+          set -euo pipefail
+
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          case "$arch" in
+            amd64) want_sha="$SYFT_SHA256_LINUX_AMD64" ;;
+            arm64) want_sha="$SYFT_SHA256_LINUX_ARM64" ;;
+            *) echo "::error::unsupported runner arch ${arch}"; exit 1 ;;
+          esac
+
+          tarball="syft_${SYFT_VERSION}_linux_${arch}.tar.gz"
+          curl -fsSL --retry 3 --retry-all-errors -o "$tarball" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${tarball}"
+          echo "${want_sha}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" syft
+          test -x ./syft || { echo "::error::syft binary not extracted"; exit 1; }
+
+          out="sbom-${IMAGE##*:}.spdx.json"
+          ./syft scan "registry:${IMAGE}" -o "spdx-json=${out}"
+          echo "file=${out}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SBOM artifact
+        if: steps.sbom.outputs.file != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.sbom.outputs.file }}
+          path: ${{ steps.sbom.outputs.file }}
+          if-no-files-found: error
 
   update-dockerhub-description:
     needs: [build-multi, build-multi-wave1]

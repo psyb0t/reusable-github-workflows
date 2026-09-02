@@ -4,6 +4,27 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.47.0 (2026-09-02)
+
+`docker-image-workflow.yml` publishes a downloadable SPDX SBOM for every pushed
+image as a workflow artifact, alongside the existing registry attestation.
+
+- New `sbom` and `sbom-multi` jobs generate an SPDX JSON SBOM from the pushed
+  image with syft and upload one per image to the run's Actions artifacts. That
+  artifact is a plain file reachable from the run page, unlike the `attestations`
+  SBOM, which is attached to the image in the registry and needs registry tooling
+  to read.
+- New `sbom_artifact` input (boolean, default `true`) toggles the artifact. It is
+  independent of `attestations`; leaving both on produces the registry attestation
+  and the downloadable file. Every current caller starts uploading SBOM artifacts
+  on its next run until it sets `sbom_artifact: false`.
+- The jobs fetch syft as a pinned release binary (v1.51.0) and verify its tarball
+  against a committed sha256 before running it, so a re-tagged or tampered release
+  cannot execute on the runner. They add no third-party action; the GitHub-owned
+  `actions/upload-artifact` publishes the SBOM.
+- The SBOM jobs are best-effort. They do not gate the release, and a generation or
+  upload failure does not fail an otherwise-green run.
+
 ## v0.46.0 (2026-08-22)
 
 Reverts the `actions: read` grant added in v0.45.0 on `code-workflow.yml`'s
