@@ -4,6 +4,18 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.47.2 (2026-09-13)
+
+Docker Hub description and visibility synchronization are release gates again.
+They fail visibly when Docker Hub cannot update metadata. The reusable workflow
+now calls Docker Hub's documented v2 API instead of a third party action. It
+also downloads Grype from its official release, verifies the architecture
+specific SHA256, and keeps the independent scan and SARIF reporting policy from
+v0.47.1. GitHub Release creation also moves to a direct GitHub CLI tool that
+retries transient API failures and accepts an existing published release. The
+GitHub hosted runner disk cleanup moves to a direct tool with the same cleanup
+set. It refuses self-hosted runners.
+
 ## v0.47.1 (2026-09-13)
 
 `docker-image-workflow.yml` now treats image scanning and Docker Hub metadata

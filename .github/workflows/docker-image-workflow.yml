@@ -98,7 +98,7 @@ on:
         default: true
 
       free_disk_space:
-        description: "Free ~25GB on the runner before build (removes Android SDK, .NET, Haskell, CodeQL, large apt pkgs, preloaded docker images). Default true for GitHub-hosted runners. MUST be disabled on self-hosted runners — wipes shared host directories."
+        description: "Free disk space before build by removing Android SDK, .NET, Haskell, selected apt packages, and preloaded Docker images. Default true for GitHub-hosted Linux runners. The cleanup tool refuses self-hosted or non-Linux runners before invoking sudo."
         required: false
         type: boolean
         default: true
@@ -118,14 +118,17 @@ concurrency:
 
 permissions: {}
 
-# Pinned syft release for the downloadable SBOM jobs, with the sha256 of each
-# linux tarball from its published syft_<version>_checksums.txt. The SBOM jobs
-# verify the download against these before running it, so a re-tagged or tampered
-# release cannot execute on the runner. Bump all three together when upgrading.
+# Pinned Syft and Grype releases, with the sha256 of each Linux tarball from
+# their published checksum files. The jobs verify a download before running it,
+# so a re-tagged or tampered release cannot execute on the runner. Bump each
+# tool's version and both architecture checksums together.
 env:
   SYFT_VERSION: "1.51.0"
   SYFT_SHA256_LINUX_AMD64: "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f"
   SYFT_SHA256_LINUX_ARM64: "6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900"
+  GRYPE_VERSION: "0.118.0"
+  GRYPE_SHA256_LINUX_AMD64: "1d444c5e7360471815f7158f71935fcecc68a3c417d85c7344f770854300bba2"
+  GRYPE_SHA256_LINUX_ARM64: "32aceeb8ee837244775fcb522372c8b3a47914986385f3148f4ee2c930482a84"
 
 jobs:
   # ══════════════════════════════════════════════
@@ -141,17 +144,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
       - name: Free disk space
         if: inputs.free_disk_space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_OS: ${{ runner.os }}
+        run: bash reusable-workflow-tools/scripts/free-disk-space.sh
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
@@ -244,84 +250,16 @@ jobs:
 
           echo "path=${target}" >> "${GITHUB_OUTPUT}"
 
-      - name: Docker Hub Description
-        continue-on-error: true
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
-        with:
-          username: ${{ secrets.dockerhub_username }}
-          password: ${{ secrets.dockerhub_token }}
-          repository: ${{ inputs.repository_name }}
-          short-description: ${{ steps.dockerhub_meta.outputs.short }}
-          readme-filepath: ${{ steps.dockerhub_meta.outputs.path }}
-
-      # Pushing to a repository that does not exist creates it, and its
-      # visibility comes from the account's default preference. That makes the
-      # result depend on a setting nobody looks at, and a repository that came
-      # out private still yields a green run with a successful push that nobody
-      # else can pull. So assert it rather than hope.
-      - name: Enforce Docker Hub visibility
-        continue-on-error: true
+      - name: Sync Docker Hub metadata
         env:
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
           REPOSITORY: ${{ inputs.repository_name }}
           WANT_PRIVATE: ${{ inputs.dockerhub_private }}
-        run: |
-          set -euo pipefail
-
-          # Nothing secret may reach a process argv -- /proc makes that readable
-          # to anything else on the runner. jq reads the credentials out of the
-          # environment rather than taking them as arguments, and the body goes
-          # to curl on stdin.
-          jwt=$(jq -nc '{username: env.DOCKERHUB_USERNAME, password: env.DOCKERHUB_TOKEN}' \
-            | curl -sS --fail-with-body -X POST \
-              -H "Content-Type: application/json" --data @- \
-              "https://hub.docker.com/v2/users/login/" \
-            | jq -r '.token // empty')
-
-          if [ -z "${jwt}" ]; then
-            echo "::warning::could not authenticate to Docker Hub; visibility not verified"
-
-            exit 0
-          fi
-
-          api="https://hub.docker.com/v2/repositories/${REPOSITORY}/"
-
-          # The session token is a credential too, so it goes in a 0600 config
-          # file rather than an -H argument. printf is a shell builtin, so the
-          # token never becomes a separate process's argv on the way in.
-          auth_config="${RUNNER_TEMP}/dockerhub-auth"
-          (
-            umask 077
-            printf 'header = "Authorization: JWT %s"\n' "${jwt}" > "${auth_config}"
-          )
-          trap 'rm -f "${auth_config}"' EXIT
-
-          current=$(curl -sS --config "${auth_config}" "${api}" | jq -r '.is_private // empty')
-
-          if [ -z "${current}" ]; then
-            echo "::warning::could not read ${REPOSITORY} from Docker Hub; visibility not verified"
-
-            exit 0
-          fi
-
-          if [ "${current}" = "${WANT_PRIVATE}" ]; then
-            echo "visibility already correct (is_private=${current})"
-
-            exit 0
-          fi
-
-          echo "correcting ${REPOSITORY}: is_private ${current} -> ${WANT_PRIVATE}"
-
-          if ! out=$(jq -nc --argjson p "${WANT_PRIVATE}" '{is_private: $p}' \
-            | curl -sS --fail-with-body -o /dev/null -X PATCH \
-              --config "${auth_config}" -H "Content-Type: application/json" \
-              --data @- "${api}" 2>&1); then
-            echo "::error::could not set visibility on ${REPOSITORY}: ${out}" >&2
-            exit 1
-          fi
-
-          echo "visibility set to is_private=${WANT_PRIVATE}"
+          SYNC_DESCRIPTION: ${{ inputs.sync_description }}
+          SHORT_DESCRIPTION: ${{ steps.dockerhub_meta.outputs.short }}
+          DESCRIPTION_FILE: ${{ steps.dockerhub_meta.outputs.path }}
+        run: bash reusable-workflow-tools/scripts/dockerhub-metadata.sh
 
   release:
     needs: build
@@ -333,8 +271,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash reusable-workflow-tools/scripts/github-release.sh
 
   scan:
     needs: build
@@ -344,12 +292,19 @@ jobs:
       contents: read # check the VEX document out, when the caller passes one
       security-events: write # upload the Grype SARIF to the repo Security tab
     steps:
-      # Only when a VEX document is in play. The scan otherwise needs nothing
-      # from the repo -- it pulls the pushed image -- so checking out
-      # unconditionally would cost every caller a clone for no reason.
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
       - name: Check out the VEX document
         if: inputs.scan_vex_file != ''
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          path: caller
 
       - name: Scan pushed image with Grype
         id: scan
@@ -357,14 +312,16 @@ jobs:
         # own failure signal, but do not let an unavailable scanner turn a
         # successful release into a failed caller workflow.
         continue-on-error: true
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          image: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
-          fail-build: ${{ inputs.scan_fail_build }}
-          severity-cutoff: ${{ inputs.scan_severity }}
-          vex: ${{ inputs.scan_vex_file }}
-          only-fixed: ${{ inputs.scan_only_fixed }}
-          output-format: sarif
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+          IMAGE: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          OUTPUT_FILE: grype.sarif
+          SCAN_FAIL_BUILD: ${{ inputs.scan_fail_build }}
+          SCAN_SEVERITY: ${{ inputs.scan_severity }}
+          ONLY_FIXED: ${{ inputs.scan_only_fixed }}
+          VEX_FILE: ${{ inputs.scan_vex_file != '' && format('caller/{0}', inputs.scan_vex_file) || '' }}
+        run: bash reusable-workflow-tools/scripts/grype-scan.sh
 
       # Publish findings to Security > Code scanning even when Grype marks its
       # own step failed, so results remain visible without blocking the release.
@@ -470,17 +427,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
       - name: Free disk space
         if: inputs.free_disk_space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_OS: ${{ runner.os }}
+        run: bash reusable-workflow-tools/scripts/free-disk-space.sh
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
@@ -552,17 +512,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
       - name: Free disk space
         if: inputs.free_disk_space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNNER_OS: ${{ runner.os }}
+        run: bash reusable-workflow-tools/scripts/free-disk-space.sh
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
@@ -624,8 +587,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash reusable-workflow-tools/scripts/github-release.sh
 
   scan-multi:
     needs: [build-multi, build-multi-wave1]
@@ -640,24 +613,39 @@ jobs:
       matrix:
         include: ${{ fromJson(inputs.build_targets) }}
     steps:
-      # See the single-image scan job: checkout only when a VEX path needs it.
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
       - name: Check out the VEX document
         if: inputs.scan_vex_file != ''
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          path: caller
 
       - name: Scan pushed image with Grype
         id: scan
         # Images and the GitHub Release are already published. Preserve scan
         # failure visibility without making it a release gate.
         continue-on-error: true
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          image: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix || '' }}
-          fail-build: ${{ inputs.scan_fail_build }}
-          severity-cutoff: ${{ inputs.scan_severity }}
-          vex: ${{ inputs.scan_vex_file }}
-          only-fixed: ${{ inputs.scan_only_fixed }}
-          output-format: sarif
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+          IMAGE: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix || '' }}
+          # Every matrix entry runs in its own runner workspace, so a fixed
+          # filename is collision-free. Keeping caller-controlled tag text out
+          # of a filesystem path also prevents an invalid or traversal-shaped
+          # tag prefix or suffix from breaking the report upload.
+          OUTPUT_FILE: grype.sarif
+          SCAN_FAIL_BUILD: ${{ inputs.scan_fail_build }}
+          SCAN_SEVERITY: ${{ inputs.scan_severity }}
+          ONLY_FIXED: ${{ inputs.scan_only_fixed }}
+          VEX_FILE: ${{ inputs.scan_vex_file != '' && format('caller/{0}', inputs.scan_vex_file) || '' }}
+        run: bash reusable-workflow-tools/scripts/grype-scan.sh
 
       # Per-image category so each matrix target's SARIF is tracked separately
       # in the Security tab instead of overwriting the others.
@@ -722,14 +710,19 @@ jobs:
     # Same skipped-dependency trap as release-multi above — see the note there.
     if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
-    # Docker Hub metadata must not block an image that already pushed, its
-    # GitHub Release, or callers that publish after this reusable workflow.
-    continue-on-error: true
     permissions:
       contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
 
       # Docker Hub has a short description and a long one, and no field at all
       # for a link -- the same gap GitLab has. The long description IS the
@@ -784,81 +777,13 @@ jobs:
 
           echo "path=${target}" >> "${GITHUB_OUTPUT}"
 
-      - name: Docker Hub Description
-        continue-on-error: true
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
-        with:
-          username: ${{ secrets.dockerhub_username }}
-          password: ${{ secrets.dockerhub_token }}
-          repository: ${{ inputs.repository_name }}
-          short-description: ${{ steps.dockerhub_meta.outputs.short }}
-          readme-filepath: ${{ steps.dockerhub_meta.outputs.path }}
-
-      # Pushing to a repository that does not exist creates it, and its
-      # visibility comes from the account's default preference. That makes the
-      # result depend on a setting nobody looks at, and a repository that came
-      # out private still yields a green run with a successful push that nobody
-      # else can pull. So assert it rather than hope.
-      - name: Enforce Docker Hub visibility
-        continue-on-error: true
+      - name: Sync Docker Hub metadata
         env:
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
           REPOSITORY: ${{ inputs.repository_name }}
           WANT_PRIVATE: ${{ inputs.dockerhub_private }}
-        run: |
-          set -euo pipefail
-
-          # Nothing secret may reach a process argv -- /proc makes that readable
-          # to anything else on the runner. jq reads the credentials out of the
-          # environment rather than taking them as arguments, and the body goes
-          # to curl on stdin.
-          jwt=$(jq -nc '{username: env.DOCKERHUB_USERNAME, password: env.DOCKERHUB_TOKEN}' \
-            | curl -sS --fail-with-body -X POST \
-              -H "Content-Type: application/json" --data @- \
-              "https://hub.docker.com/v2/users/login/" \
-            | jq -r '.token // empty')
-
-          if [ -z "${jwt}" ]; then
-            echo "::warning::could not authenticate to Docker Hub; visibility not verified"
-
-            exit 0
-          fi
-
-          api="https://hub.docker.com/v2/repositories/${REPOSITORY}/"
-
-          # The session token is a credential too, so it goes in a 0600 config
-          # file rather than an -H argument. printf is a shell builtin, so the
-          # token never becomes a separate process's argv on the way in.
-          auth_config="${RUNNER_TEMP}/dockerhub-auth"
-          (
-            umask 077
-            printf 'header = "Authorization: JWT %s"\n' "${jwt}" > "${auth_config}"
-          )
-          trap 'rm -f "${auth_config}"' EXIT
-
-          current=$(curl -sS --config "${auth_config}" "${api}" | jq -r '.is_private // empty')
-
-          if [ -z "${current}" ]; then
-            echo "::warning::could not read ${REPOSITORY} from Docker Hub; visibility not verified"
-
-            exit 0
-          fi
-
-          if [ "${current}" = "${WANT_PRIVATE}" ]; then
-            echo "visibility already correct (is_private=${current})"
-
-            exit 0
-          fi
-
-          echo "correcting ${REPOSITORY}: is_private ${current} -> ${WANT_PRIVATE}"
-
-          if ! out=$(jq -nc --argjson p "${WANT_PRIVATE}" '{is_private: $p}' \
-            | curl -sS --fail-with-body -o /dev/null -X PATCH \
-              --config "${auth_config}" -H "Content-Type: application/json" \
-              --data @- "${api}" 2>&1); then
-            echo "::error::could not set visibility on ${REPOSITORY}: ${out}" >&2
-            exit 1
-          fi
-
-          echo "visibility set to is_private=${WANT_PRIVATE}"
+          SYNC_DESCRIPTION: ${{ inputs.sync_description }}
+          SHORT_DESCRIPTION: ${{ steps.dockerhub_meta.outputs.short }}
+          DESCRIPTION_FILE: ${{ steps.dockerhub_meta.outputs.path }}
+        run: bash reusable-workflow-tools/scripts/dockerhub-metadata.sh

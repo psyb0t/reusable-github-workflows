@@ -107,13 +107,13 @@ jobs:
 Builds and pushes a multi-arch Docker image to Docker Hub.
 
 - Pushes `:latest` from the default branch, `:<tag>` on tag pushes.
-- Updates the Docker Hub repository description (the **Overview** tab) from the repo's `README.md` after every successful push via `peter-evans/dockerhub-description`.
+- Updates Docker Hub repository description and visibility through Docker Hub's documented v2 API after every successful push. Metadata synchronization is a release gate. A pushed image does not hide a failed Docker Hub update.
 
 > **The Docker Hub token needs Read, Write and Delete.** Pushing an image needs Write. Updating repository metadata, including the description, README, and visibility, needs the Docker Hub scope that also includes Delete. Nothing in this workflow issues a `DELETE`.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
 - Uploads a downloadable SPDX SBOM for each pushed image to the run's **Actions artifacts** (toggle off with `sbom_artifact: false`). This is the plain-file counterpart to `attestations`, which attaches the SBOM to the registry image and needs registry tooling to read.
-- On tag pushes, creates a GitHub Release once the build succeeds.
-- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push and uploads findings as SARIF to **Security → Code scanning**. Images and GitHub Releases never wait on scans. A finding, scanner outage, or SARIF-upload failure stays visible in its scan job without blocking publication. `scan_fail_build: true` marks the scan step failed for visibility only. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
+- On tag pushes, creates a GitHub Release once the build succeeds through the GitHub CLI. It retries transient GitHub API failures and accepts an existing published release.
+- Optionally scans the pushed image with the checksum verified official Grype release binary after push and uploads findings as SARIF to **Security → Code scanning**. Images and GitHub Releases never wait on scans. A finding, scanner outage, or SARIF-upload failure stays visible in its scan job without blocking publication. `scan_fail_build: true` marks the scan step failed for visibility only. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
 
 Trigger from `push` so it fires on branch and tag pushes. The workflow only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*`.
 
@@ -170,7 +170,7 @@ Setting `scan_vex_file` makes the scan job check out the repository. That job gr
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `sbom_artifact` | boolean | `true` | Generate a downloadable SPDX SBOM per pushed image (with a pinned, checksum-verified syft) and upload it to the run's Actions artifacts. Independent of `attestations`, which attaches the SBOM to the registry image instead. |
-| `free_disk_space` | boolean | `true` | Free ~25 to 30 GB before build. **Disable for self-hosted runners.** The cleanup wipes shared host directories. |
+| `free_disk_space` | boolean | `true` | Free disk space before build by removing Android SDK, .NET, Haskell, selected apt packages, and preloaded Docker images. Disable it for self-hosted or non-Linux runners. The direct cleanup tool refuses those runners before invoking `sudo`. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. Use your self-hosted runner label + `free_disk_space: false`. |
 
 ### Secrets
@@ -313,7 +313,7 @@ sharing a stage still build in parallel; stages run in ascending order.
 
 ### Disk space notes
 
-`free_disk_space: true` is on by default because the standard `ubuntu-latest` runner ships with ~14 GB free, which often isn't enough for CUDA / torch / large ML images. The cleanup runs `jlumbroso/free-disk-space@v1.3.1` after checkout in every build job and frees roughly:
+`free_disk_space: true` is on by default because the standard `ubuntu-latest` runner ships with ~14 GB free, which often isn't enough for CUDA / torch / large ML images. The direct cleanup tool runs after checkout in every build job and frees roughly:
 
 - Android SDK + NDK: ~14 GB
 - Haskell toolchain (`/opt/ghc`): ~5.3 GB
@@ -323,19 +323,24 @@ sharing a stage still build in parallel; stages run in ascending order.
 
 Tool cache (`/opt/hostedtoolcache`) and swap are **not** touched (the tool cache holds Go / Node / Python runtimes the workflow may still need; killing swap is risky on memory-tight builds).
 
-**Self-hosted runners must set `free_disk_space: false`.** The cleanup wipes shared host directories that other workloads may use.
+**Self-hosted runners must set `free_disk_space: false`.** The direct cleanup tool refuses to run unless GitHub identifies the runner as GitHub hosted.
 
 ### Pinned tool versions
 
 | Component | Pin |
 |---|---|
-| `jlumbroso/free-disk-space` | `@v1.3.1` |
-| `anchore/scan-action` (Grype) | `@v7.4.2` |
+| Free disk cleanup | GitHub-hosted Linux runner only, direct shell tool |
+| Syft release binary | `v1.51.0`, checksum verified for amd64 and arm64 |
+| Grype release binary | `v0.118.0`, checksum verified for amd64 and arm64 |
+| Docker Hub metadata | Docker Hub v2 API, Bearer JWT, direct shell tool |
+| `actions/checkout` | `@v6.0.3` |
+| `actions/upload-artifact` | `@v4.6.2` |
+| `github/codeql-action/upload-sarif` | `@v4.37.1` |
+| GitHub release | GitHub CLI, direct shell tool |
 | `docker/build-push-action` | `@v7.2.0` |
 | `docker/login-action` | `@v4.2.0` |
 | `docker/setup-buildx-action` | `@v4.1.0` |
 | `docker/setup-qemu-action` | `@v4.1.0` |
-| `peter-evans/dockerhub-description` | `@v5.0.0` |
 
 ## go-workflow.yml
 
