@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly DOCKERHUB_API_BASE='https://hub.docker.com'
 readonly LOG_FILE="${LOG_FILE:-${RUNNER_TEMP:-/tmp}/dockerhub-metadata.log}"
+readonly MAX_SHORT_DESCRIPTION_BYTES=100
 
 log() {
 	local level=$1
@@ -66,6 +67,12 @@ fi
 description_file=${DESCRIPTION_FILE:-}
 if [[ -n "${description_file}" && (! -f "${description_file}" || ! -r "${description_file}") ]]; then
 	log ERROR "DESCRIPTION_FILE is not a readable file"
+	exit 1
+fi
+
+short_description_bytes=$(printf '%s' "${SHORT_DESCRIPTION:-}" | LC_ALL=C wc -c)
+if [[ "${sync_description}" == true ]] && ((short_description_bytes > MAX_SHORT_DESCRIPTION_BYTES)); then
+	log ERROR "SHORT_DESCRIPTION exceeds Docker Hub UTF-8 byte limit bytes=${short_description_bytes} max_bytes=${MAX_SHORT_DESCRIPTION_BYTES}"
 	exit 1
 fi
 

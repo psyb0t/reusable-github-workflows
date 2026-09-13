@@ -6,6 +6,8 @@ readonly SCRIPT_DIR
 REPOSITORY_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly REPOSITORY_DIR
 readonly DOCKERHUB_SCRIPT="${REPOSITORY_DIR}/scripts/dockerhub-metadata.sh"
+readonly SHORT_DESCRIPTION_SCRIPT="${REPOSITORY_DIR}/scripts/dockerhub-short-description.sh"
+readonly MCP_REGISTRY_PUBLISH_SCRIPT="${REPOSITORY_DIR}/scripts/mcp-registry-publish.sh"
 readonly GRYPE_SCRIPT="${REPOSITORY_DIR}/scripts/grype-scan.sh"
 readonly GITHUB_RELEASE_SCRIPT="${REPOSITORY_DIR}/scripts/github-release.sh"
 readonly FREE_DISK_SPACE_SCRIPT="${REPOSITORY_DIR}/scripts/free-disk-space.sh"
@@ -15,6 +17,10 @@ readonly FIXTURE_JWT='fixture-jwt'
 readonly FIXTURE_REPOSITORY='fixture-org/fixture-image'
 readonly FIXTURE_DESCRIPTION='fixture description'
 readonly FIXTURE_FULL_DESCRIPTION='fixture full description'
+readonly MAX_SHORT_DESCRIPTION_BYTES=100
+readonly TRUNCATION_SUFFIX='...'
+readonly FIXTURE_MCP_SERVER_NAME='io.github.fixture/test-server'
+readonly FIXTURE_MCP_SERVER_VERSION='1.2.3'
 readonly FIXTURE_VERSION='0.118.0'
 readonly FIXTURE_SHA256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 readonly EXIT_THRESHOLD=2
@@ -234,6 +240,171 @@ test_metadata_fails_on_auth_patch_and_verification() {
 
 		run_metadata_case "${case_dir}" "${FIXTURE_REPOSITORY}" false false '' 1
 	done
+}
+
+test_short_description_byte_limit() {
+	local exact_limit
+	exact_limit=$(printf '%*s' "${MAX_SHORT_DESCRIPTION_BYTES}" '' | tr ' ' 'a')
+	local truncation_limit=$((MAX_SHORT_DESCRIPTION_BYTES - ${#TRUNCATION_SUFFIX}))
+	local expected_ascii_truncation
+	expected_ascii_truncation=$(printf '%*s' "${truncation_limit}" '' | tr ' ' 'a')
+	expected_ascii_truncation+="${TRUNCATION_SUFFIX}"
+	local unicode_prefix_length=$((truncation_limit - 1))
+	local unicode_prefix
+	unicode_prefix=$(printf '%*s' "${unicode_prefix_length}" '' | tr ' ' 'a')
+
+	local case_name input expected actual actual_bytes
+	while IFS=$'\t' read -r case_name input expected; do
+		actual=$(printf '%s' "${input}" | bash "${SHORT_DESCRIPTION_SCRIPT}")
+		assert_equals "${expected}" "${actual}" "short description case=${case_name}"
+		actual_bytes=$(printf '%s' "${actual}" | LC_ALL=C wc -c)
+		if ((actual_bytes > MAX_SHORT_DESCRIPTION_BYTES)); then
+			fail "short description case=${case_name} exceeded byte limit bytes=${actual_bytes}"
+		fi
+	done < <(
+		printf '%s\t%s\t%s\n' 'empty' '' ''
+		printf '%s\t%s\t%s\n' 'short-ascii' 'short' 'short'
+		printf '%s\t%s\t%s\n' 'exact-ascii' "${exact_limit}" "${exact_limit}"
+		printf '%s\t%s\t%s\n' 'over-ascii' "${exact_limit}x" "${expected_ascii_truncation}"
+		printf '%s\t%s\t%s\n' 'unicode-boundary' "${unicode_prefix}€zz" "${unicode_prefix}${TRUNCATION_SUFFIX}"
+	)
+}
+
+test_metadata_rejects_oversized_short_description_before_authentication() {
+	local case_dir
+	case_dir=$(new_case 'metadata-oversized-short-description')
+	write_metadata_curl_mock "${case_dir}" 'success' '{"is_private":false}'
+	local oversized_description
+	oversized_description="$(printf '%*s' "$((MAX_SHORT_DESCRIPTION_BYTES - 1))" '' | tr ' ' 'a')€"
+
+	run_expected 1 env \
+		PATH="${case_dir}/bin:${PATH}" \
+		TEST_CASE_DIR="${case_dir}" \
+		MOCK_CURL_MODE="$(<"${case_dir}/mode")" \
+		MOCK_METADATA="$(<"${case_dir}/metadata")" \
+		MOCK_JWT="${FIXTURE_JWT}" \
+		RUNNER_TEMP="${case_dir}" \
+		LOG_FILE="${case_dir}/metadata.log" \
+		DOCKERHUB_USERNAME="${FIXTURE_USERNAME}" \
+		DOCKERHUB_TOKEN="${FIXTURE_TOKEN}" \
+		REPOSITORY="${FIXTURE_REPOSITORY}" \
+		WANT_PRIVATE=false \
+		SYNC_DESCRIPTION=true \
+		SHORT_DESCRIPTION="${oversized_description}" \
+		bash "${DOCKERHUB_SCRIPT}"
+	assert_file_absent "${case_dir}/curl-args-POST" 'oversized short description must not authenticate'
+}
+
+write_mcp_registry_mocks() {
+	local case_dir=$1
+
+	cat >"${case_dir}/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly case_dir="${TEST_CASE_DIR:?}"
+readonly mode="${MOCK_MCP_REGISTRY_MODE:?}"
+readonly server_json="${MOCK_MCP_REGISTRY_SERVER_JSON:?}"
+
+output_file=''
+for ((index = 1; index <= $#; index++)); do
+	if [[ "${!index}" == '--output' ]]; then
+		next_index=$((index + 1))
+		output_file="${!next_index}"
+	fi
+done
+printf '%s\n' "$@" >"${case_dir}/mcp-registry-curl-args"
+
+count=0
+if [[ -f "${case_dir}/mcp-registry-curl-count" ]]; then
+	count=$(<"${case_dir}/mcp-registry-curl-count")
+fi
+count=$((count + 1))
+printf '%s\n' "${count}" >"${case_dir}/mcp-registry-curl-count"
+
+status='200'
+body=$(jq -cn --argjson server "${server_json}" '{server: $server}')
+case "${mode}" in
+existing-match) ;;
+existing-mismatch) body=$(jq -cn --argjson server "${server_json}" '{server: ($server | .description = "different")}') ;;
+missing-then-match | duplicate-then-match)
+	if ((count == 1)); then
+		status='404'
+		body='{}'
+	fi
+	;;
+*) exit 1 ;;
+esac
+
+printf '%s\n' "${body}" >"${output_file}"
+printf '%s' "${status}"
+MOCK
+
+	cat >"${case_dir}/bin/mcp-publisher" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly case_dir="${TEST_CASE_DIR:?}"
+readonly mode="${MOCK_MCP_REGISTRY_MODE:?}"
+printf '%s\n' "$@" >>"${case_dir}/mcp-publisher-args"
+
+if [[ "$1" == 'login' ]]; then
+	exit 0
+fi
+if [[ "$1" == 'publish' && "${mode}" == 'duplicate-then-match' ]]; then
+	printf 'invalid version: cannot publish duplicate version\n' >&2
+	exit 1
+fi
+if [[ "$1" == 'publish' ]]; then
+	exit 0
+fi
+exit 1
+MOCK
+
+	chmod +x "${case_dir}/bin/curl" "${case_dir}/bin/mcp-publisher"
+}
+
+run_mcp_registry_case() {
+	local case_dir=$1
+	local mode=$2
+	local expected_status=$3
+	local server_json="${case_dir}/server.json"
+	printf '%s\n' "$(jq -cn --arg name "${FIXTURE_MCP_SERVER_NAME}" --arg version "${FIXTURE_MCP_SERVER_VERSION}" '{name: $name, version: $version, description: "fixture", packages: []}')" >"${server_json}"
+
+	run_expected "${expected_status}" env \
+		PATH="${case_dir}/bin:${PATH}" \
+		TEST_CASE_DIR="${case_dir}" \
+		MOCK_MCP_REGISTRY_MODE="${mode}" \
+		MOCK_MCP_REGISTRY_SERVER_JSON="$(<"${server_json}")" \
+		RUNNER_TEMP="${case_dir}" \
+		SERVER_JSON="${server_json}" \
+		MCP_REGISTRY_API_BASE='https://registry.example/v0.1' \
+		MCP_PUBLISHER="${case_dir}/bin/mcp-publisher" \
+		bash "${MCP_REGISTRY_PUBLISH_SCRIPT}"
+}
+
+test_mcp_registry_publish_idempotence() {
+	local case_dir
+	case_dir=$(new_case 'mcp-registry-existing-match')
+	write_mcp_registry_mocks "${case_dir}"
+	run_mcp_registry_case "${case_dir}" 'existing-match' 0
+	assert_file_absent "${case_dir}/mcp-publisher-args" 'existing exact version must not call publisher'
+
+	case_dir=$(new_case 'mcp-registry-missing-then-match')
+	write_mcp_registry_mocks "${case_dir}"
+	run_mcp_registry_case "${case_dir}" 'missing-then-match' 0
+	assert_file_contains "${case_dir}/mcp-publisher-args" 'login' 'missing version must authenticate'
+	assert_file_contains "${case_dir}/mcp-publisher-args" 'publish' 'missing version must publish'
+
+	case_dir=$(new_case 'mcp-registry-duplicate-then-match')
+	write_mcp_registry_mocks "${case_dir}"
+	run_mcp_registry_case "${case_dir}" 'duplicate-then-match' 0
+	assert_file_contains "${case_dir}/mcp-publisher-args" 'publish' 'duplicate race must attempt publish once'
+
+	case_dir=$(new_case 'mcp-registry-existing-mismatch')
+	write_mcp_registry_mocks "${case_dir}"
+	run_mcp_registry_case "${case_dir}" 'existing-mismatch' 1
+	assert_file_absent "${case_dir}/mcp-publisher-args" 'mismatching version must not overwrite metadata'
 }
 
 write_grype_mocks() {
@@ -538,6 +709,9 @@ main() {
 	test_metadata_visibility_only
 	test_metadata_rejects_invalid_repository_before_network
 	test_metadata_fails_on_auth_patch_and_verification
+	test_short_description_byte_limit
+	test_metadata_rejects_oversized_short_description_before_authentication
+	test_mcp_registry_publish_idempotence
 	test_grype_success_and_threshold_behavior
 	test_grype_stops_before_login_on_checksum_failure
 	test_github_release_idempotence_and_retry

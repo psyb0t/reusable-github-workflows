@@ -120,7 +120,7 @@ Trigger from `push` so it fires on branch and tag pushes. The workflow only acts
 **The Docker Hub page is kept in step with the GitHub one.** Three things drift otherwise, and all three are invisible until someone lands on the Docker Hub page and finds nothing useful:
 
 - **Visibility.** A pushed repository starts with the account default visibility. `dockerhub_private` (default `false`) checks and corrects it after every push.
-- **The short description.** It comes from the GitHub repository description. Docker Hub caps it at **100 characters**, and the workflow counts codepoints so it does not split a multi-byte character.
+- **The short description.** It comes from the GitHub repository description. Docker Hub caps it at **100 UTF-8 bytes**. The workflow truncates on whole-character boundaries and adds `...` when needed, so the value can be shorter than 100 characters.
 - **Links.** Docker Hub has no project or source URL field. With `readme_url_header` (default `true`), the workflow prepends the source link and homepage to the long description. It does not change the repository README.
 
 Topics are deliberately **not** synced: Docker Hub's `categories` are a fixed taxonomy rather than free-form tags, so GitHub topics have nothing to map onto.
@@ -165,7 +165,7 @@ Setting `scan_vex_file` makes the scan job check out the repository. That job gr
 | `scan_vex_file` | string | `""` | Path to an [OpenVEX](https://openvex.dev) document passed to Grype as `--vex`. Use it only for an assessed CVE that does not affect this image. Suppressed findings leave the Security tab. |
 | `scan_only_fixed` | boolean | `false` | Only report vulnerabilities that have a fix available. |
 | `dockerhub_private` | boolean | `false` | Visibility the Docker Hub repository should have. The workflow checks and corrects it after every push. |
-| `sync_description` | boolean | `true` | Set the Docker Hub short description from the GitHub repo description (cut to 100 characters), and compose the long one. |
+| `sync_description` | boolean | `true` | Set the Docker Hub short description from the GitHub repo description (cut to 100 UTF-8 bytes), and compose the long one. |
 | `readme_url_header` | boolean | `true` | Prepend source + project-page links to the long description on Docker Hub. The repo's own README is not modified. |
 | `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
@@ -665,7 +665,7 @@ Publishes a `server.json` from the caller repository root by default to the offi
 
 Auth is **secretless**: it uses the GitHub Actions OIDC token to prove ownership of the `io.github.<owner>/*` namespace, so there is no registry token to store. The calling job MUST grant `id-token: write`. Ownership of a referenced Docker image is verified by the registry against an `io.modelcontextprotocol.server.name` LABEL on the image, which must equal `server.json`'s `name`.
 
-On a tag push (`vX.Y.Z`) it stamps `server.json`'s `version` to `X.Y.Z` and rewrites each `oci` package `identifier` tag to the git tag, so the entry points at the exact image the same release built. `mcp-publisher` is exact-pinned (`publisher_version`, default `v1.8.0`) behind an age-gate.
+On a tag push (`vX.Y.Z`) it stamps `server.json`'s `version` to `X.Y.Z` and rewrites each `oci` package `identifier` tag to the git tag, so the entry points at the exact image the same release built. `mcp-publisher` is exact-pinned (`publisher_version`, default `v1.8.0`) behind an age-gate. A rerun reads the exact public version first. A matching entry is a successful no-op. A different immutable entry fails instead of being overwritten.
 
 ### Inputs
 

@@ -80,6 +80,14 @@ jobs:
       - name: Checkout code (read-only)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
       - name: Age-gate + install mcp-publisher (exact-pinned)
         env:
           PUBLISHER_VERSION: ${{ inputs.publisher_version }}
@@ -199,8 +207,8 @@ jobs:
           echo "── server.json to publish ──"
           cat "$SERVER_JSON"
 
-      - name: Authenticate to the registry (secretless GitHub OIDC)
-        run: ./mcp-publisher login github-oidc
-
-      - name: Publish to the MCP Registry
-        run: ./mcp-publisher publish
+      - name: Publish or verify the MCP Registry version
+        env:
+          SERVER_JSON: ${{ inputs.server_json }}
+          MCP_PUBLISHER: ./mcp-publisher
+        run: bash reusable-workflow-tools/scripts/mcp-registry-publish.sh

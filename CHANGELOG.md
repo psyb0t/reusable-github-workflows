@@ -4,6 +4,20 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.47.3 (2026-09-13)
+
+Docker image metadata and MCP Registry reruns now handle the failure modes that
+appeared in the Claudebox, Codexbox, and Pibox release jobs.
+
+- Docker Hub short descriptions now use Docker Hub's 100 UTF-8 byte limit,
+  rather than a character count. Both single-image and multi-image jobs keep
+  whole Unicode characters and reject invalid direct input before
+  authentication.
+- MCP Registry publishing now reads the exact public version before OIDC login.
+  A matching existing entry is a successful no-op. A different immutable entry
+  fails. A duplicate response is accepted only after the Registry returns the
+  exact expected metadata.
+
 ## v0.47.2 (2026-09-13)
 
 Docker Hub description and visibility synchronization are release gates again.

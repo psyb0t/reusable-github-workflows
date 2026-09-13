@@ -62,7 +62,7 @@ on:
         default: false
 
       sync_description:
-        description: "Set the Docker Hub short description from the GitHub repository description, and prepend source + project links to the long description. Docker Hub caps the short description at 100 CHARACTERS, so a longer one is cut to end in '...'; the cut counts codepoints rather than bytes, because a byte-count would slice a multi-byte character in half."
+        description: "Set the Docker Hub short description from the GitHub repository description, and prepend source + project links to the long description. Docker Hub caps the short description at 100 UTF-8 bytes, so a longer one is cut on a whole-character boundary to end in '...'."
         required: false
         type: boolean
         default: true
@@ -212,12 +212,8 @@ jobs:
 
           meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
 
-          # Docker Hub caps this at 100 CHARACTERS. jq counts codepoints; bash
-          # ${#var} counts bytes and would cut a multi-byte character in half.
-          short=$(printf '%s' "${meta}" | jq -r '
-            .description
-            | if length > 100 then .[0:97] + "..." else . end
-          ')
+          short=$(printf '%s' "${meta}" | jq -jr '.description' |
+            bash reusable-workflow-tools/scripts/dockerhub-short-description.sh)
           {
             echo "short<<EOF"
             echo "${short}"
@@ -739,12 +735,8 @@ jobs:
 
           meta=$(gh api "repos/${SOURCE}" --jq '{description: (.description // ""), homepage: (.homepage // "")}')
 
-          # Docker Hub caps this at 100 CHARACTERS. jq counts codepoints; bash
-          # ${#var} counts bytes and would cut a multi-byte character in half.
-          short=$(printf '%s' "${meta}" | jq -r '
-            .description
-            | if length > 100 then .[0:97] + "..." else . end
-          ')
+          short=$(printf '%s' "${meta}" | jq -jr '.description' |
+            bash reusable-workflow-tools/scripts/dockerhub-short-description.sh)
           {
             echo "short<<EOF"
             echo "${short}"
