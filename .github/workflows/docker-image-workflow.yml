@@ -38,7 +38,7 @@ on:
         default: true
 
       scan_fail_build:
-        description: "Fail the workflow when Grype finds a vuln at/above scan_severity. Off by default: an image built on any real base accumulates upstream CVEs continuously, most of them with no fix available, so failing on them turns the pipeline permanently red and the signal stops meaning anything. Findings are uploaded to the Security tab either way — that is where they are meant to be read. Set true for an image where a vuln genuinely must block the release. To populate the Security tab, the caller's job must grant `permissions: security-events: write`."
+        description: "Ask Grype to mark findings at or above scan_severity as failures. Off by default: an image built on any real base accumulates upstream CVEs continuously, most of them with no fix available, so failing on them turns the pipeline permanently red and the signal stops meaning anything. Findings are uploaded to the Security tab either way. Scans never gate image publishing or a GitHub Release; set true only when the scan step itself should be marked failed for visibility. To populate the Security tab, the caller's job must grant `permissions: security-events: write`."
         required: false
         type: boolean
         default: false
@@ -245,6 +245,7 @@ jobs:
           echo "path=${target}" >> "${GITHUB_OUTPUT}"
 
       - name: Docker Hub Description
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.dockerhub_username }}
@@ -259,6 +260,7 @@ jobs:
       # out private still yields a green run with a successful push that nobody
       # else can pull. So assert it rather than hope.
       - name: Enforce Docker Hub visibility
+        continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
@@ -351,7 +353,11 @@ jobs:
 
       - name: Scan pushed image with Grype
         id: scan
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        # The image and release have already published. Preserve the scan step's
+        # own failure signal, but do not let an unavailable scanner turn a
+        # successful release into a failed caller workflow.
+        continue-on-error: true
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ inputs.repository_name }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
           fail-build: ${{ inputs.scan_fail_build }}
@@ -360,8 +366,8 @@ jobs:
           only-fixed: ${{ inputs.scan_only_fixed }}
           output-format: sarif
 
-      # Publish findings to Security > Code scanning, even when the scan step
-      # failed the build (fail-build: true) — so results are visible either way.
+      # Publish findings to Security > Code scanning even when Grype marks its
+      # own step failed, so results remain visible without blocking the release.
       # continue-on-error: the upload 403s if the caller didn't grant
       # security-events: write; that must not fail an otherwise-green run.
       - name: Upload Grype SARIF to the Security tab
@@ -425,6 +431,9 @@ jobs:
   # ══════════════════════════════════════════════
   # Multi-target build (staged: base first, dependents after)
   # ══════════════════════════════════════════════
+
+  # TODO: Deduplicate branch and tag runs for one release, and resolve
+  # dependent targets against that release's base image instead of `latest`.
 
   # Partition build_targets into ordered waves by optional per-target "stage"
   # (default 0). Wave 0 builds+pushes first; wave 1 builds after. Targets with
@@ -626,6 +635,8 @@ jobs:
       contents: read # check the VEX document out, when the caller passes one
       security-events: write # upload the Grype SARIF to the repo Security tab
     strategy:
+      # A broken scan must not cancel another target's Security report.
+      fail-fast: false
       matrix:
         include: ${{ fromJson(inputs.build_targets) }}
     steps:
@@ -636,7 +647,10 @@ jobs:
 
       - name: Scan pushed image with Grype
         id: scan
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        # Images and the GitHub Release are already published. Preserve scan
+        # failure visibility without making it a release gate.
+        continue-on-error: true
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}${{ matrix.tag_suffix || '' }}
           fail-build: ${{ inputs.scan_fail_build }}
@@ -708,6 +722,9 @@ jobs:
     # Same skipped-dependency trap as release-multi above — see the note there.
     if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != '' && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
+    # Docker Hub metadata must not block an image that already pushed, its
+    # GitHub Release, or callers that publish after this reusable workflow.
+    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -768,6 +785,7 @@ jobs:
           echo "path=${target}" >> "${GITHUB_OUTPUT}"
 
       - name: Docker Hub Description
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.dockerhub_username }}
@@ -782,6 +800,7 @@ jobs:
       # out private still yields a green run with a successful push that nobody
       # else can pull. So assert it rather than hope.
       - name: Enforce Docker Hub visibility
+        continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}

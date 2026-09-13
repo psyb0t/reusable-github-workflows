@@ -113,7 +113,7 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
 - Uploads a downloadable SPDX SBOM for each pushed image to the run's **Actions artifacts** (toggle off with `sbom_artifact: false`). This is the plain-file counterpart to `attestations`, which attaches the SBOM to the registry image and needs registry tooling to read.
 - On tag pushes, creates a GitHub Release once the build succeeds.
-- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push and uploads findings as SARIF to **Security → Code scanning**. The artifact and GitHub Release are already published when the scan runs. A finding does not fail the run by default (`scan_fail_build: false`) because base-image CVEs are continuous and often lack a fix. Set `scan_fail_build: true` when a finding must block release. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
+- Optionally scans the pushed image with Grype (`anchore/scan-action`) after push and uploads findings as SARIF to **Security → Code scanning**. Images and GitHub Releases never wait on scans. A finding, scanner outage, or SARIF-upload failure stays visible in its scan job without blocking publication. `scan_fail_build: true` marks the scan step failed for visibility only. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
 
 Trigger from `push` so it fires on branch and tag pushes. The workflow only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*`.
 
@@ -161,7 +161,7 @@ Setting `scan_vex_file` makes the scan job check out the repository. That job gr
 | `build_targets` | string (JSON) | `""` | Multi-target build matrix (see below). Empty = single-image build. |
 | `scan_enabled` | boolean | `true` | Run Grype scan against the pushed image + upload SARIF to the Security tab. |
 | `scan_severity` | string | `"medium"` | Grype severity threshold to fail on: `negligible`, `low`, `medium`, `high`, `critical`. |
-| `scan_fail_build` | boolean | `false` | Fail the run on a finding at or above `scan_severity`. Off by default because upstream CVEs are continuous and often unfixable. Findings still reach the Security tab. Set `true` where a finding must block release. The caller needs `permissions: security-events: write` for the Security tab. |
+| `scan_fail_build` | boolean | `false` | Mark the scan step failed on a finding at or above `scan_severity`. Findings still reach the Security tab, but scans never block image publication or a GitHub Release. The caller needs `permissions: security-events: write` for the Security tab. |
 | `scan_vex_file` | string | `""` | Path to an [OpenVEX](https://openvex.dev) document passed to Grype as `--vex`. Use it only for an assessed CVE that does not affect this image. Suppressed findings leave the Security tab. |
 | `scan_only_fixed` | boolean | `false` | Only report vulnerabilities that have a fix available. |
 | `dockerhub_private` | boolean | `false` | Visibility the Docker Hub repository should have. The workflow checks and corrects it after every push. |
@@ -330,7 +330,7 @@ Tool cache (`/opt/hostedtoolcache`) and swap are **not** touched (the tool cache
 | Component | Pin |
 |---|---|
 | `jlumbroso/free-disk-space` | `@v1.3.1` |
-| `anchore/scan-action` (Grype) | `@v7.4.0` |
+| `anchore/scan-action` (Grype) | `@v7.4.2` |
 | `docker/build-push-action` | `@v7.2.0` |
 | `docker/login-action` | `@v4.2.0` |
 | `docker/setup-buildx-action` | `@v4.1.0` |

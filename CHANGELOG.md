@@ -4,6 +4,23 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.47.1 (2026-09-13)
+
+`docker-image-workflow.yml` now treats image scanning and Docker Hub metadata
+as reporting work, not release gates.
+
+- Grype scan findings, scanner installation failures, and SARIF upload failures
+  remain visible in the scan job and Security tab when a report exists, but can
+  no longer block an image push, GitHub Release, or caller jobs that depend on
+  the reusable workflow.
+- Multi-image scan matrices no longer cancel the remaining targets when one
+  scanner fails.
+- Grype moves to `anchore/scan-action` v7.4.2, which fixes the action's
+  release-specific installer selection.
+- Docker Hub description and visibility synchronization are best-effort
+  metadata tasks. An upstream metadata outage no longer makes a pushed image
+  look unreleased.
+
 ## v0.47.0 (2026-09-02)
 
 `docker-image-workflow.yml` publishes a downloadable SPDX SBOM for every pushed
