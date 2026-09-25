@@ -179,8 +179,8 @@ jobs:
           push: true
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:latest
-          cache-from: type=gha,scope=${{ github.ref_name }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}
+          cache-from: type=gha,scope=${{ github.event.repository.name }}-single
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.event.repository.name }}-single
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -192,8 +192,8 @@ jobs:
           push: true
           platforms: ${{ inputs.target_platforms }}
           tags: ${{ inputs.repository_name }}:${{ github.ref_name }}
-          cache-from: type=gha,scope=${{ github.ref_name }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}
+          cache-from: type=gha,scope=${{ github.event.repository.name }}-single
+          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.event.repository.name }}-single
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -461,8 +461,8 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
           build-args: ${{ matrix.build_args || '' }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-from: ${{ matrix.cache_from || format('type=gha,scope={0}-{1}-{2}-{3}{4}', github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
+          cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -477,8 +477,8 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ github.ref_name }}${{ matrix.tag_suffix || '' }}
           build-args: ${{ matrix.build_args || '' }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-from: ${{ matrix.cache_from || format('type=gha,scope={0}-{1}-{2}-{3}{4}', github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
+          cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -546,8 +546,8 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
           build-args: ${{ matrix.build_args || '' }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-from: ${{ matrix.cache_from || format('type=gha,scope={0}-{1}-{2}-{3}{4}', github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
+          cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
@@ -562,8 +562,8 @@ jobs:
           target: ${{ matrix.target || '' }}
           tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}${{ github.ref_name }}${{ matrix.tag_suffix || '' }}
           build-args: ${{ matrix.build_args || '' }}
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
-          cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.ref_name }}-${{ matrix.target || matrix.tag_prefix || matrix.tag_suffix }}
+          cache-from: ${{ matrix.cache_from || format('type=gha,scope={0}-{1}-{2}-{3}{4}', github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
+          cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 

@@ -4,6 +4,13 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.48.0 (2026-09-24)
+
+`docker-image-workflow.yml` now keeps build caches stable across main, tags, and retries. Multi-image callers can also provide separate registry cache refs for oversized variants.
+
+- The default GitHub Actions cache scope now derives from the caller repository and image variant instead of the current ref.
+- A multi-image target may set `cache_from` and `cache_to`. This lets a large CPU or CUDA build use its own max-mode registry cache without competing for the caller's GitHub Actions cache budget.
+
 ## v0.47.3 (2026-09-13)
 
 Docker image metadata and MCP Registry reruns now handle the failure modes that

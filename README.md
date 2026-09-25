@@ -167,7 +167,7 @@ Setting `scan_vex_file` makes the scan job check out the repository. That job gr
 | `dockerhub_private` | boolean | `false` | Visibility the Docker Hub repository should have. The workflow checks and corrects it after every push. |
 | `sync_description` | boolean | `true` | Set the Docker Hub short description from the GitHub repo description (cut to 100 UTF-8 bytes), and compose the long one. |
 | `readme_url_header` | boolean | `true` | Prepend source + project-page links to the long description on Docker Hub. The repo's own README is not modified. |
-| `cache_mode` | string | `"max"` | Buildx GHA cache mode. Use `min` for smaller cache exports. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
+| `cache_mode` | string | `"max"` | Buildx GHA cache mode. `max` retains intermediate dependency layers, while `min` retains only final layers. Each cache is stable per caller repository and image variant, so main, tags, and retries reuse it. Cache export is best-effort: a cache-service failure warns but never blocks an image push. |
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `sbom_artifact` | boolean | `true` | Generate a downloadable SPDX SBOM per pushed image (with a pinned, checksum-verified syft) and upload it to the run's Actions artifacts. Independent of `attestations`, which attaches the SBOM to the registry image instead. |
 | `free_disk_space` | boolean | `true` | Free disk space before build by removing Android SDK, .NET, Haskell, selected apt packages, and preloaded Docker images. Disable it for self-hosted or non-Linux runners. The direct cleanup tool refuses those runners before invoking `sudo`. |
@@ -251,6 +251,24 @@ with:
       {"file": "Dockerfile.cuda", "tag_suffix": "-cuda"}
     ]
 ```
+
+The default GHA cache stays in the caller repository and is shared by main, tags, and retries. A very large multi-stage image can instead set `cache_from` and `cache_to` on each target to use a distinct registry cache ref. The ref must differ from every published image tag and from every sibling variant.
+
+```yaml
+with:
+  repository_name: psyb0t/myapp
+  build_targets: |
+    [
+      {
+        "file": "Dockerfile.cuda",
+        "tag_suffix": "-cuda",
+        "cache_from": "type=registry,ref=psyb0t/myapp:buildcache-cuda",
+        "cache_to": "type=registry,ref=psyb0t/myapp:buildcache-cuda,mode=max,ignore-error=true"
+      }
+    ]
+```
+
+Registry cache exports retain all stages without consuming the caller's GHA cache budget. A missing `cache_from` ref is a cold build, not a release error.
 
 **Tag-prefixed companion image** (a controller with a worker/cell image in the
 same repository):
