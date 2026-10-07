@@ -14,6 +14,8 @@ name: ClawHub Publish Workflow
 # want to repeat the wiring in every caller. A repo that has only one of the two
 # (or an empty dir) skips the missing half cleanly instead of failing; set the
 # corresponding input to false only if you want to force a half off.
+# `skill_names` / `plugin_names` optionally select exact subfolder names for
+# both validation and publication. Empty string keeps discovery; [] selects none.
 #
 # Each half runs as validate → publish: a `validate-*` job runs whenever the
 # workflow is CALLED (dry-run for skills, static Plugin Inspector for plugins —
@@ -73,6 +75,18 @@ on:
         required: false
         type: string
         default: ".agents/plugins"
+
+      skill_names:
+        description: 'JSON array of exact skill folder names. Empty string selects all; [] selects none.'
+        required: false
+        type: string
+        default: ""
+
+      plugin_names:
+        description: 'JSON array of exact plugin folder names. Empty string selects all; [] selects none.'
+        required: false
+        type: string
+        default: ""
 
       registry:
         description: "ClawHub registry base URL"
@@ -201,6 +215,7 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.clawhub_token }}
           SKILLS_DIR: ${{ inputs.skills_dir }}
+          SKILL_NAMES: ${{ inputs.skill_names }}
           REGISTRY: ${{ inputs.registry }}
           SITE: ${{ inputs.site }}
           OWNER: ${{ inputs.owner }}
@@ -210,7 +225,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          selected_names="${SKILL_NAMES:-}"
+          if [ -n "$selected_names" ]; then
+            if ! jq -e 'type == "array" and all(.[];
+              type == "string" and length > 0 and . != "." and . != ".." and
+              (explode | all(. >= 32 and . != 47 and . != 92 and . != 127)))' \
+              <<<"$selected_names" >/dev/null; then
+              echo "::error::skill_names must be a JSON array of exact folder names"
+              exit 1
+            fi
+          fi
+
           if [ ! -d "$SKILLS_DIR" ]; then
+            if [ -n "$selected_names" ] && [ "$(jq length <<<"$selected_names")" -gt 0 ]; then
+              echo "::error::Selected skills cannot be found: $SKILLS_DIR does not exist"
+              exit 1
+            fi
             echo "skills_dir '$SKILLS_DIR' does not exist — nothing to validate; skipping"
             exit 0
           fi
@@ -219,6 +249,24 @@ jobs:
           while IFS= read -r -d '' md; do
             skill_dirs+=("$(dirname "$md")")
           done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -iname "SKILL.md" -print0 | sort -z)
+
+          if [ -n "$selected_names" ]; then
+            selected_dirs=()
+            found_names='[]'
+            for dir in "${skill_dirs[@]}"; do
+              name="$(basename "$dir")"
+              if jq -e --arg name "$name" 'index($name) != null' <<<"$selected_names" >/dev/null; then
+                selected_dirs+=("$dir")
+                found_names="$(jq --arg name "$name" '. + [$name]' <<<"$found_names")"
+              fi
+            done
+            missing_names="$(jq -cn --argjson requested "$selected_names" --argjson found "$found_names" '$requested - $found')"
+            if [ "$missing_names" != '[]' ]; then
+              echo "::error::Selected skills lack a discoverable manifest: $missing_names"
+              exit 1
+            fi
+            skill_dirs=("${selected_dirs[@]}")
+          fi
 
           if [ "${#skill_dirs[@]}" -eq 0 ]; then
             echo "no SKILL.md under $SKILLS_DIR/<name>/SKILL.md — nothing to validate; skipping"
@@ -307,6 +355,7 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.clawhub_token }}
           SKILLS_DIR: ${{ inputs.skills_dir }}
+          SKILL_NAMES: ${{ inputs.skill_names }}
           REGISTRY: ${{ inputs.registry }}
           SITE: ${{ inputs.site }}
           TAGS: ${{ inputs.tags }}
@@ -321,7 +370,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          selected_names="${SKILL_NAMES:-}"
+          if [ -n "$selected_names" ]; then
+            if ! jq -e 'type == "array" and all(.[];
+              type == "string" and length > 0 and . != "." and . != ".." and
+              (explode | all(. >= 32 and . != 47 and . != 92 and . != 127)))' \
+              <<<"$selected_names" >/dev/null; then
+              echo "::error::skill_names must be a JSON array of exact folder names"
+              exit 1
+            fi
+          fi
+
           if [ ! -d "$SKILLS_DIR" ]; then
+            if [ -n "$selected_names" ] && [ "$(jq length <<<"$selected_names")" -gt 0 ]; then
+              echo "::error::Selected skills cannot be found: $SKILLS_DIR does not exist"
+              exit 1
+            fi
             echo "skills_dir '$SKILLS_DIR' does not exist — no skills to publish; skipping"
             exit 0
           fi
@@ -330,6 +394,24 @@ jobs:
           while IFS= read -r -d '' md; do
             skill_dirs+=("$(dirname "$md")")
           done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -iname "SKILL.md" -print0 | sort -z)
+
+          if [ -n "$selected_names" ]; then
+            selected_dirs=()
+            found_names='[]'
+            for dir in "${skill_dirs[@]}"; do
+              name="$(basename "$dir")"
+              if jq -e --arg name "$name" 'index($name) != null' <<<"$selected_names" >/dev/null; then
+                selected_dirs+=("$dir")
+                found_names="$(jq --arg name "$name" '. + [$name]' <<<"$found_names")"
+              fi
+            done
+            missing_names="$(jq -cn --argjson requested "$selected_names" --argjson found "$found_names" '$requested - $found')"
+            if [ "$missing_names" != '[]' ]; then
+              echo "::error::Selected skills lack a discoverable manifest: $missing_names"
+              exit 1
+            fi
+            skill_dirs=("${selected_dirs[@]}")
+          fi
 
           if [ "${#skill_dirs[@]}" -eq 0 ]; then
             echo "no SKILL.md under $SKILLS_DIR/<name>/SKILL.md — no skills to publish; skipping"
@@ -521,17 +603,51 @@ jobs:
       - name: Validate plugins (static Plugin Inspector)
         env:
           PLUGINS_DIR: ${{ inputs.plugins_dir }}
+          PLUGIN_NAMES: ${{ inputs.plugin_names }}
           REGISTRY: ${{ inputs.registry }}
           SITE: ${{ inputs.site }}
         run: |
           set -euo pipefail
+          selected_names="${PLUGIN_NAMES:-}"
+          if [ -n "$selected_names" ]; then
+            if ! jq -e 'type == "array" and all(.[];
+              type == "string" and length > 0 and . != "." and . != ".." and
+              (explode | all(. >= 32 and . != 47 and . != 92 and . != 127)))' \
+              <<<"$selected_names" >/dev/null; then
+              echo "::error::plugin_names must be a JSON array of exact folder names"
+              exit 1
+            fi
+          fi
+
           if [ ! -d "$PLUGINS_DIR" ]; then
+            if [ -n "$selected_names" ] && [ "$(jq length <<<"$selected_names")" -gt 0 ]; then
+              echo "::error::Selected plugins cannot be found: $PLUGINS_DIR does not exist"
+              exit 1
+            fi
             echo "plugins_dir '$PLUGINS_DIR' does not exist — nothing to validate; skipping"; exit 0
           fi
           plugin_dirs=()
           while IFS= read -r -d '' mf; do
             plugin_dirs+=("$(dirname "$mf")")
           done < <(find "$PLUGINS_DIR" -mindepth 2 -maxdepth 2 -name "openclaw.plugin.json" -print0 | sort -z)
+
+          if [ -n "$selected_names" ]; then
+            selected_dirs=()
+            found_names='[]'
+            for dir in "${plugin_dirs[@]}"; do
+              name="$(basename "$dir")"
+              if jq -e --arg name "$name" 'index($name) != null' <<<"$selected_names" >/dev/null; then
+                selected_dirs+=("$dir")
+                found_names="$(jq --arg name "$name" '. + [$name]' <<<"$found_names")"
+              fi
+            done
+            missing_names="$(jq -cn --argjson requested "$selected_names" --argjson found "$found_names" '$requested - $found')"
+            if [ "$missing_names" != '[]' ]; then
+              echo "::error::Selected plugins lack a discoverable manifest: $missing_names"
+              exit 1
+            fi
+            plugin_dirs=("${selected_dirs[@]}")
+          fi
           if [ "${#plugin_dirs[@]}" -eq 0 ]; then
             echo "no openclaw.plugin.json under $PLUGINS_DIR/<name>/openclaw.plugin.json — nothing to validate; skipping"; exit 0
           fi
@@ -592,6 +708,7 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.clawhub_token }}
           PLUGINS_DIR: ${{ inputs.plugins_dir }}
+          PLUGIN_NAMES: ${{ inputs.plugin_names }}
           REGISTRY: ${{ inputs.registry }}
           SITE: ${{ inputs.site }}
           OWNER: ${{ inputs.owner }}
@@ -604,7 +721,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          selected_names="${PLUGIN_NAMES:-}"
+          if [ -n "$selected_names" ]; then
+            if ! jq -e 'type == "array" and all(.[];
+              type == "string" and length > 0 and . != "." and . != ".." and
+              (explode | all(. >= 32 and . != 47 and . != 92 and . != 127)))' \
+              <<<"$selected_names" >/dev/null; then
+              echo "::error::plugin_names must be a JSON array of exact folder names"
+              exit 1
+            fi
+          fi
+
           if [ ! -d "$PLUGINS_DIR" ]; then
+            if [ -n "$selected_names" ] && [ "$(jq length <<<"$selected_names")" -gt 0 ]; then
+              echo "::error::Selected plugins cannot be found: $PLUGINS_DIR does not exist"
+              exit 1
+            fi
             echo "plugins_dir '$PLUGINS_DIR' does not exist — no plugins to publish; skipping"; exit 0
           fi
 
@@ -613,6 +745,24 @@ jobs:
           while IFS= read -r -d '' mf; do
             plugin_dirs+=("$(dirname "$mf")")
           done < <(find "$PLUGINS_DIR" -mindepth 2 -maxdepth 2 -name "openclaw.plugin.json" -print0 | sort -z)
+
+          if [ -n "$selected_names" ]; then
+            selected_dirs=()
+            found_names='[]'
+            for dir in "${plugin_dirs[@]}"; do
+              name="$(basename "$dir")"
+              if jq -e --arg name "$name" 'index($name) != null' <<<"$selected_names" >/dev/null; then
+                selected_dirs+=("$dir")
+                found_names="$(jq --arg name "$name" '. + [$name]' <<<"$found_names")"
+              fi
+            done
+            missing_names="$(jq -cn --argjson requested "$selected_names" --argjson found "$found_names" '$requested - $found')"
+            if [ "$missing_names" != '[]' ]; then
+              echo "::error::Selected plugins lack a discoverable manifest: $missing_names"
+              exit 1
+            fi
+            plugin_dirs=("${selected_dirs[@]}")
+          fi
 
           if [ "${#plugin_dirs[@]}" -eq 0 ]; then
             echo "no openclaw.plugin.json under $PLUGINS_DIR/<name>/openclaw.plugin.json — no plugins to publish; skipping"; exit 0

@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.49.0 (2026-10-07)
+
+- ClawHub callers can select exact skill and plugin folder names with `skill_names` and `plugin_names` JSON arrays. Defaults still discover every entry. Selection applies to validation, publication and plugin version updates; missing selected manifests and malformed lists fail before ClawHub is called.
+
 ## v0.48.0 (2026-09-24)
 
 `docker-image-workflow.yml` now keeps build caches stable across main, tags, and retries. Multi-image callers can also provide separate registry cache refs for oversized variants.

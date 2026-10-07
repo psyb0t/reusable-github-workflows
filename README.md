@@ -625,6 +625,8 @@ jobs:
 
 Publishes **skills** and **plugins** to [ClawHub](https://clawhub.ai) through the official `clawhub` CLI. `publish_skills` and `publish_plugins` both default to `true`. A missing or empty directory skips that half. Validation runs on every call. Publishing runs only on a tag after validation passes.
 
+Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to validate and publish only those entries. Omit either input, or pass an empty string, to keep discovering every entry of that kind. `[]` selects none. Names match folder names, not manifest display names or npm package names. Duplicates are processed once. A malformed list, invalid folder name, or selected folder without its discoverable manifest fails before that step invokes ClawHub. Unselected entries are neither validated nor published, and their plugin versions are not changed. The existing `publish_skills` and `publish_plugins` switches still disable their respective jobs entirely.
+
 **Skills:** one skill per `<skills_dir>/<name>/SKILL.md`. The CLI derives metadata and packages regular files except dotfiles and `node_modules`. A tag mirrors its version when it is newer than ClawHub's current version. Otherwise the CLI patch-bumps. `version` overrides both paths. Existing versions count as already published. The job has `contents: read`, uses the ClawHub token for publishing, pins the CLI and actions, applies the release-age gate, and installs with `npm install -g … --ignore-scripts`. ClawHub licenses its hosted skill copy as `MIT-0`. `dry_run: true` validates without publishing.
 
 **Plugins:** one plugin per `<plugins_dir>/<name>/openclaw.plugin.json`. The workflow runs static `clawhub package validate` without `--runtime` or `--allow-execute`, then publishes. A tag updates `package.json#version` and `openclaw.plugin.json#version` when present. `npm pack` packages source without installing the plugin dependency tree. Plugin package names are npm-scoped (`@owner/name`).
@@ -642,6 +644,8 @@ Publishes **skills** and **plugins** to [ClawHub](https://clawhub.ai) through th
 | `publish_plugins` | boolean | `true` | Publish plugins found under `plugins_dir`. |
 | `skills_dir` | string | `".agents/skills"` | Directory holding one subfolder per skill, each with a `SKILL.md`. |
 | `plugins_dir` | string | `".agents/plugins"` | Directory holding one subfolder per plugin, each with an `openclaw.plugin.json`. |
+| `skill_names` | string | `""` | JSON array of exact skill folder names. Empty string discovers all; `[]` selects none. |
+| `plugin_names` | string | `""` | JSON array of exact plugin folder names. Empty string discovers all; `[]` selects none. |
 | `registry` | string | `"https://clawhub.ai"` | ClawHub registry base URL. |
 | `site` | string | `"https://clawhub.ai"` | ClawHub site base URL (used by the CLI for page links). |
 | `tags` | string | `"latest"` | Comma-separated ClawHub tags applied to the published version. |
@@ -676,6 +680,18 @@ jobs:
 ```
 
 With the defaults, that publishes every skill under `.agents/skills/` and every plugin under `.agents/plugins/` on tag pushes. Drop the `if:` line to validate skills and plugins on every push. Publishing still runs only on tags.
+
+To keep additional private or development skills in the repository without publishing them, add an allowlist to the caller:
+
+```yaml
+    with:
+      skill_names: '["android-lab"]'
+      plugin_names: '[]'
+```
+
+That selects `.agents/skills/android-lab/SKILL.md` and no plugins. To select specific plugins as well, use `plugin_names: '["my-plugin"]'`. ClawHub selection does not make repository files private; anything committed to a public repository remains public.
+
+Run `python3 tests/test_clawhub_selection.py -v` to test the four workflow steps against a recording CLI without publishing. The test needs Python 3 with PyYAML, Bash and jq; it needs no token or network access.
 
 ## mcp-registry-publish.yml
 
