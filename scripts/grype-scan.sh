@@ -151,7 +151,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
 fi
 
 if [[ "${scan_status}" -eq 0 ]]; then
-	log INFO "image scan complete outcome=clean"
+	log INFO "image scan complete outcome=completed"
 	exit 0
 fi
 if [[ "${scan_status}" -eq "${GRYPE_THRESHOLD_EXIT}" && "${SCAN_FAIL_BUILD}" == true ]]; then

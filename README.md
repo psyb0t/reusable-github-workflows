@@ -115,6 +115,8 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 - On tag pushes, creates a GitHub Release once the build succeeds through the GitHub CLI. It retries transient GitHub API failures and accepts an existing published release.
 - Optionally scans the pushed image with the checksum verified official Grype release binary after push and uploads findings as SARIF to **Security → Code scanning**. Images and GitHub Releases never wait on scans. A finding, scanner outage, or SARIF-upload failure stays visible in its scan job without blocking publication. `scan_fail_build: true` marks the scan step failed for visibility only. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
 
+A successful scan logs `outcome=completed`. That confirms the scanner finished, not that the image has no vulnerabilities. Read the SARIF findings in the Security tab; report-only scans can complete successfully with findings.
+
 Trigger from `push` so it fires on branch and tag pushes. The workflow only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*`.
 
 **The Docker Hub page is kept in step with the GitHub one.** Three things drift otherwise, and all three are invisible until someone lands on the Docker Hub page and finds nothing useful:

@@ -469,7 +469,11 @@ for argument in "$@"; do
 	esac
 done
 if [[ "${MOCK_GRYPE_WRITES_SARIF:-true}" == true ]]; then
-	printf '{"version":"2.1.0","runs":[]}' >"${output_file}"
+	if [[ "${MOCK_GRYPE_HAS_FINDINGS:-false}" == true ]]; then
+		printf '{"version":"2.1.0","runs":[{"results":[{"ruleId":"fixture-vulnerability","message":{"text":"fixture finding"}}]}]}' >"${output_file}"
+	else
+		printf '{"version":"2.1.0","runs":[]}' >"${output_file}"
+	fi
 fi
 exit "${MOCK_GRYPE_STATUS:-0}"
 GRYPE
@@ -504,6 +508,7 @@ run_grype_case() {
 	local expected_status=$3
 	local grype_status=$4
 	local checksum_fail=$5
+	local has_findings=${6:-false}
 
 	run_expected "${expected_status}" env \
 		PATH="${case_dir}/bin:${PATH}" \
@@ -522,7 +527,25 @@ run_grype_case() {
 		SCAN_SEVERITY='high' \
 		MOCK_GRYPE_STATUS="${grype_status}" \
 		MOCK_CHECKSUM_FAIL="${checksum_fail}" \
+		MOCK_GRYPE_HAS_FINDINGS="${has_findings}" \
 		bash "${GRYPE_SCRIPT}"
+}
+
+test_grype_completion_does_not_claim_clean() {
+	local fail_build has_findings case_dir
+	for fail_build in false true; do
+		for has_findings in false true; do
+			case_dir=$(new_case "grype-completion-${fail_build}-${has_findings}")
+			write_grype_mocks "${case_dir}"
+			run_grype_case "${case_dir}" "${fail_build}" 0 0 false "${has_findings}"
+			jq -Rse '[split("\n")[] | fromjson? | select(.level == "INFO" and .msg == "image scan complete outcome=completed")] | length == 1' \
+				"${case_dir}/grype.log" >/dev/null || fail 'Grype must log completion without claiming a clean image'
+			assert_file_contains "${case_dir}/github-output" "sarif=${case_dir}/results.sarif" 'completion preserves SARIF upload output'
+			if [[ "${has_findings}" == true ]]; then
+				jq -e '.runs[0].results | length == 1' "${case_dir}/results.sarif" >/dev/null || fail 'report-only findings must remain in SARIF'
+			fi
+		done
+	done
 }
 
 test_grype_success_and_threshold_behavior() {
@@ -542,6 +565,14 @@ test_grype_success_and_threshold_behavior() {
 	assert_file_contains "${case_dir}/github-output" "sarif=${case_dir}/results.sarif" 'grype threshold GitHub output'
 	assert_file_contains "${case_dir}/grype-args" '--fail-on' 'grype threshold parameter'
 	assert_file_contains "${case_dir}/grype-args" 'high' 'grype threshold severity'
+	jq -Rse '[split("\n")[] | fromjson? | select(.level == "WARN" and .msg == "image scan threshold reached severity=high")] | length == 1' \
+		"${case_dir}/grype.log" >/dev/null || fail 'Grype threshold must retain its warning'
+
+	case_dir=$(new_case 'grype-scanner-failure')
+	write_grype_mocks "${case_dir}"
+	run_grype_case "${case_dir}" false 1 1 false
+	jq -Rse '[split("\n")[] | fromjson? | select(.level == "ERROR" and .msg == "image scan failed exit=1")] | length == 1' \
+		"${case_dir}/grype.log" >/dev/null || fail 'Grype scanner failure must retain its error'
 }
 
 test_grype_stops_before_login_on_checksum_failure() {
@@ -712,6 +743,7 @@ main() {
 	test_short_description_byte_limit
 	test_metadata_rejects_oversized_short_description_before_authentication
 	test_mcp_registry_publish_idempotence
+	test_grype_completion_does_not_claim_clean
 	test_grype_success_and_threshold_behavior
 	test_grype_stops_before_login_on_checksum_failure
 	test_github_release_idempotence_and_retry
