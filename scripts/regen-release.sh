@@ -162,12 +162,13 @@ validate_subject() {
 		return 1
 	fi
 	# Tolerate the model adding the right prefix itself; reject any other version.
-	text="${text#"${tag}: "}"
+	[[ -n "${tag}" ]] && text="${text#"${tag}: "}"
 	if [[ "${text}" =~ ^v?[0-9]+\.[0-9]+ ]]; then
 		log WARN "subject.txt starts with a different version"
 		return 1
 	fi
-	full="${tag}: ${text}"
+	full="${text}"
+	[[ -n "${tag}" ]] && full="${tag}: ${text}"
 	if ((${#full} > MAX_SUBJECT_CHARS)); then
 		log WARN "subject over ${MAX_SUBJECT_CHARS} chars len=${#full}"
 		return 1
@@ -274,6 +275,36 @@ check_verdict() {
 	echo "::warning::No valid review verdict; releasing without one"
 }
 
+# tag: false. The regenerated code is committed with the description as the
+# message body; no version, changelog entry, version file or tag changes.
+commit_only() {
+	local subject entry_file
+	entry_file="$(mktemp)"
+	if ! validate_changelog >"${entry_file}"; then
+		echo "::warning::claudebox changelog entry rejected; using the deterministic fallback"
+		fallback_changelog >"${entry_file}"
+	fi
+	if ! subject="$(validate_subject "")"; then
+		echo "::warning::claudebox subject rejected; using the deterministic fallback"
+		subject="regenerate generated code"
+	fi
+
+	git config user.name "${BOT_NAME}"
+	git config user.email "${BOT_EMAIL}"
+	git add --all
+	{
+		printf '%s\n\n' "${subject}"
+		cat "${entry_file}"
+	} | git commit --quiet --cleanup=verbatim --file=-
+
+	if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+		printf 'tag=\nversion=\n' >>"${GITHUB_OUTPUT}"
+	fi
+	summary "### Regenerated commit (no tag)" "" "- Subject: \`${subject}\`"
+	log INFO "commit prepared without a tag"
+	rm -f -- "${entry_file}"
+}
+
 main() {
 	local last kind reason bump tag version subject entry_file major
 
@@ -289,6 +320,11 @@ main() {
 	if git diff --cached --quiet HEAD; then
 		log ERROR "patch applied but produced no changes"
 		exit 1
+	fi
+
+	if [[ "${TAG_ENABLED:-false}" != "true" ]]; then
+		commit_only
+		return 0
 	fi
 
 	last="$(last_semver_tag)"

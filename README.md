@@ -54,7 +54,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`make-checks.yml`](#make-checksyml) | Deprecated compatibility runner for container-backed `make lint` and `make test` checks. Use `code-workflow.yml` for new callers. |
 | [`release-workflow.yml`](#release-workflowyml) | Cut a GitHub release for a tag (tag + notes, no artifacts) via the gh CLI. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
-| [`regen-and-update-repo.yml`](#regen-and-update-repoyml) | Run a generator; if the tree changed, run checks, have Claude fix failures, then describe, classify and review the change, then commit, tag, push and publish. |
+| [`regen-and-update-repo.yml`](#regen-and-update-repoyml) | Run a generator; if the tree changed, run checks, have Claude fix failures, describe, classify and review the change, then commit and push (and tag, optionally). |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
@@ -701,20 +701,18 @@ Run `python3 tests/test_clawhub_selection.py -v` to test the four workflow steps
 
 ## regen-and-update-repo.yml
 
-Keeps generated code current without a human in the loop. It runs the repository's own generate command; if that changes the tree, it runs the repository's checks. When they fail, Claude (through the [`psyb0t/docker-claudebox` GitHub Action](https://github.com/psyb0t/docker-claudebox#github-action)) fixes the checkout and the checks run again. Then Claude describes, classifies and reviews the change, and the workflow commits, tags, pushes and publishes. If nothing changed, the run ends green with nothing pushed. A typical caller is a generated API client refreshed daily from the spec its upstream publishes.
+Keeps generated code current without a human in the loop. It runs the repository's own generate command; if that changes the tree, it runs the repository's checks. When they fail, Claude (through the [`psyb0t/docker-claudebox` GitHub Action](https://github.com/psyb0t/docker-claudebox#github-action)) fixes the checkout and the checks run again. Then Claude describes, classifies and reviews the change, and the workflow commits and pushes it, with a version tag when `tag: true`. If nothing changed, the run ends green with nothing pushed. A typical caller is a generated API client refreshed daily from the spec its upstream publishes.
+
+The workflow does not publish anything itself. With the `GH_PAT` secret set, its push counts as a push by the token's owner, so the repository's own push and tag workflows (CI, release, mirrors, package publishing) run exactly as they would for a manual push. Without it, the push uses `GITHUB_TOKEN`, which starts no workflows.
 
 | Job | Permissions | What it does |
 |---|---|---|
 | `regen` | `contents: read` | Full-history checkout, `generate_command`, `git status --porcelain`. On a change: run `check_commands` (failing if the checks alter the tree), run the fix loop when they fail, build the patch from the checked tree (`git add -N` + `git diff --binary`, so new files are included), optionally run `apidiff`, and upload three artifacts: `regen-patch`, `regen-context`, `regen-prompt`. |
-| `describe` | `contents: read` | Runs `psyb0t/docker-claudebox@v2.8.1` with `regen-context` mounted read-only and uploads its output directory as `regen-description`. The action mounts the runner's Docker socket. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt`, `bump-reason.txt` and `verdict.txt`. |
-| `release` | `contents: write` | Applies the patch to the commit `regen` started from, validates Claude's files, computes the version, prepends the changelog entry, bumps `version_files`, commits as `github-actions[bot]`, creates an annotated tag (`vX.Y.Z`, blank line, the entry), and pushes branch and tag with one `git push --atomic`. |
-| `github-release` | `contents: write` | [`release-workflow.yml`](#release-workflowyml) with the new `tag`. |
-| `clawhub` | `contents: read` | [`clawhub-publish.yml`](#clawhub-publishyml) with the new `tag`, when `clawhub_publish` is true. |
-| `report-failure` | `issues: write` | Scheduled runs only, when `regen` or `release` failed: comments on the open issue titled `failure_issue_title`, or opens it. |
+| `review` | `contents: read` | Runs `psyb0t/docker-claudebox@v2.8.1` with `regen-context` mounted read-only and uploads its output directory as `regen-review`. The action mounts the runner's Docker socket. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt`, `bump-reason.txt` and `verdict.txt`. |
+| `commit` | `contents: write` | Applies the patch to the commit `regen` started from, checks the review verdict, validates Claude's files and commits as `github-actions[bot]`. With `tag: true` it also computes the version, prepends the changelog entry, bumps `version_files` and creates an annotated tag (`vX.Y.Z`, blank line, the entry). It pushes the branch, and the tag when there is one, with one `git push --atomic`, using `GH_PAT` when set. |
+| `report-failure` | `issues: write` | Scheduled runs only, when `regen` or `commit` failed: comments on the open issue titled `failure_issue_title`, or opens it. |
 
-The publish jobs exist because a tag pushed with `GITHUB_TOKEN` does not trigger the repository's own tag pipeline. The new commit does not trigger a push pipeline either.
-
-**Versioning.** The workflow computes the version, not Claude. It reads the highest `vX.Y.Z` tag and maps Claude's `change-kind.txt`:
+**Tagging.** `tag` defaults to `false`: the commit carries Claude's subject line and the changelog text as its body, and nothing else changes. With `tag: true`, the workflow computes the version, not Claude. It reads the highest `vX.Y.Z` tag and maps Claude's `change-kind.txt`:
 
 | Change kind | Before 1.0.0 | 1.0.0 and later |
 |---|---|---|
@@ -724,17 +722,21 @@ The publish jobs exist because a tag pushed with `GITHUB_TOKEN` does not trigger
 
 Anything other than those three words counts as `fix`. The new tag must not exist locally or on the remote, so a version is never reused, and every bump is one step from the last tag, so none is skipped. The kind, the bump and Claude's reason appear in the job summary. With `go_apidiff: true`, the exported API of the Go module at the last tag is compared with the regenerated tree (`golang.org/x/exp/cmd/apidiff`, pinned). The report is evidence for Claude, not the decision.
 
-**Fix loop.** When `check_commands` fail, up to `fix_attempts` (default 3) attempts run in `regen`. Each attempt runs the claudebox action on the checkout itself, with a read-only `/context` holding the latest check output, the diff so far, every earlier check log, each earlier attempt's own summary and diff, and the writing rules (`scripts/regen-writing-rules.md`). The prompt tells Claude to read the repository's `AGENTS.md` and `.agents/rules/` first, follow the repository's code standards, use its Make targets, and fix the cause at its source (spec patch scripts, generator config, hand-written code, pins or dependencies) rather than in generated files. After each attempt a guard compares the tree with the one before it and fails the run when Claude touched a path matching `fix_protected_paths`, added a check suppression (`t.Skip`, `nolint`, `nosemgrep`, `gitleaks:allow`, `#nosec`, `noqa`, `eslint-disable`, `@ts-ignore`, `shellcheck disable`) outside vendored and generated files, or added AI attribution. Then the checks run again. When they still fail after the last attempt, the run fails, nothing is pushed, and a scheduled run reports it in the failure issue. Claude's summaries and the combined fix diff go to `describe`, so the changelog entry covers the fixes. The job log shows Claude's messages, tool calls and tool results as they happen, each attempt's changed files and summary go to the job summary, and the `regen-fix` artifact keeps every attempt's context, prompt, notes, diff and check logs, also when the run fails.
+**Fix loop.** When `check_commands` fail, up to `fix_attempts` (default 3) attempts run in `regen`. Each attempt runs the claudebox action on the checkout itself, with a read-only `/context` holding the latest check output, the diff so far, every earlier check log, each earlier attempt's own summary and diff, and the writing rules (`scripts/regen-writing-rules.md`). The prompt tells Claude to read the repository's `AGENTS.md` and `.agents/rules/` first, follow the repository's code standards, use its Make targets, and fix the cause at its source (spec patch scripts, generator config, hand-written code, pins or dependencies) rather than in generated files. After each attempt a guard compares the tree with the one before it and fails the run when Claude touched a protected path, added a check suppression (`t.Skip`, `nolint`, `nosemgrep`, `gitleaks:allow`, `#nosec`, `noqa`, `eslint-disable`, `@ts-ignore`, `shellcheck disable`) outside vendored and generated files, or added AI attribution. Then the checks run again. When they still fail after the last attempt, the run fails, nothing is pushed, and a scheduled run reports it in the failure issue. Claude's summaries and the combined fix diff go to `review`, so the changelog entry covers the fixes.
 
-**Review.** `describe` also writes `verdict.txt`: `ok`, or `block: ` and one line of reason when the change must not ship, for example a weakened test, a hidden error or removed API the spec still has. With `block_on_review: true` (the default) a block stops the release, and so does a missing or malformed verdict when the release includes fixes. Without fixes a missing verdict only warns.
+**Protected paths.** Each repository declares what a fix attempt must not touch in `fix_protected_paths`, one glob per line, where `*` also matches across directories. The default is `.github/*` and `Makefile`. On top of the list, `.github/*`, `changelog_path` and every `version_files` entry are always protected. Because the list lives in the caller workflow under `.github/`, Claude cannot change it. The prompt shows Claude the full list.
 
-**Validation of Claude's output.** `changelog.md` must be non-empty, under `max_changelog_bytes`, made of `- ` bullet lines, and free of em and en dashes, `Co-authored-by` and session URLs. `subject.txt` must be one line without its own version prefix, under 72 characters once `vX.Y.Z: ` is prepended, and pass the same text checks. A file that fails is replaced by a deterministic fallback: a bullet with the diff stat plus one bullet per apidiff line, and the subject `vX.Y.Z: regenerate generated code`. A failed or timed-out `describe` job gets the same fallbacks, so a Claude outage does not block the release.
+**Watching Claude.** The job log shows Claude's messages, tool calls and tool results as they happen. Each attempt's changed files and summary go to the job summary, and the `regen-fix` artifact keeps every attempt's context, prompt, notes, diff and check logs, also when the run fails.
+
+**Review.** `review` also writes `verdict.txt`: `ok`, or `block: ` and one line of reason when the change must not ship, for example a weakened test, a hidden error or removed API the spec still has. With `block_on_review: true` (the default) a block stops the commit, and so does a missing or malformed verdict when the change includes fixes. Without fixes a missing verdict only warns.
+
+**Validation of Claude's output.** `changelog.md` must be non-empty, under `max_changelog_bytes`, made of `- ` bullet lines, and free of em and en dashes, `Co-authored-by` and session URLs. `subject.txt` must be one line without its own version prefix, under 72 characters (with `vX.Y.Z: ` prepended when tagging), and pass the same text checks. A file that fails is replaced by a deterministic fallback: a bullet with the diff stat plus one bullet per apidiff line, and the subject `regenerate generated code`. A failed or timed-out `review` job gets the same fallbacks, so a Claude outage does not block the commit unless the change includes fixes.
 
 **Concurrency.** One run per repository at a time, never cancelled. A branch that moved after `regen` makes the atomic push fail rather than force anything.
 
-**Trust boundary.** Claude never sees a GitHub token: `regen` and `describe` have `contents: read`, check out without persisted credentials, and pass only the Claude credential. The fix attempts change code that `regen` then runs through `check_commands`; the guard and the passing checks are what let those changes into the patch. `describe`'s output is text that `release` validates and writes into files. `release` runs nothing from the repository or from Claude, and only `release` can write to the repository. `generate_command`, `check_commands` and `context_command` run as shell on the runner, like the `*_command` inputs of [`code-workflow.yml`](#code-workflowyml); call this workflow only from repositories you trust, with branch protection on the workflow files.
+**Trust boundary.** Claude never sees a GitHub token: `regen` and `review` have `contents: read`, check out without persisted credentials, and pass only the Claude credential. The fix attempts change code that `regen` then runs through `check_commands`; the guard and the passing checks are what let those changes into the patch. `review`'s output is text that `commit` validates and writes into files. `commit` runs nothing from the repository or from Claude, and only `commit` can write to the repository; it alone receives `GH_PAT`. With `GH_PAT` set, the pushed code then runs in the repository's own workflows with that repository's secrets, so keep the scripts those workflows run in `fix_protected_paths`. `generate_command`, `check_commands` and `context_command` run as shell on the runner, like the `*_command` inputs of [`code-workflow.yml`](#code-workflowyml); call this workflow only from repositories you trust, with branch protection on the workflow files.
 
-The `release` job pushes to the triggering branch with `GITHUB_TOKEN`. Branch protection that blocks the Actions bot from pushing makes the push fail.
+Branch protection that blocks the pushing identity (the `GH_PAT` owner, or the Actions bot without it) makes the push fail.
 
 ### Inputs
 
@@ -744,24 +746,21 @@ The `release` job pushes to the triggering branch with `GITHUB_TOKEN`. Branch pr
 | `check_commands` | string | `"make lint && make test && make sec"` | Run on a change, before anything is pushed. Must not modify files. `""` or `"-"` skips. |
 | `fix_attempts` | number | `3` | Fix attempts when the checks fail, `0` to `3`. `0` turns the loop off. |
 | `fix_timeout_minutes` | number | `30` | Timeout for each fix attempt. |
-| `fix_protected_paths` | string | `.github/`, `AGENTS.md`, `.agents/rules/`, gitleaks, golangci and semgrep config, `scripts/sec.sh`, `scripts/lint.sh`, `CHANGELOG.md` | Extended regex over repo-relative paths a fix attempt must not touch. |
-| `block_on_review` | boolean | `true` | Stop the release on a `block` verdict, or on a missing verdict when the release includes fixes. |
+| `fix_protected_paths` | string | `.github/*` and `Makefile` | Paths a fix attempt must not touch, one glob per line. `.github/*`, `changelog_path` and `version_files` are always added. |
+| `block_on_review` | boolean | `true` | Stop the commit on a `block` verdict, or on a missing verdict when the change includes fixes. |
+| `tag` | boolean | `false` | Bump the version, prepend the changelog entry, update `version_files` and push an annotated `vX.Y.Z` tag with the commit. |
 | `context_command` | string | `""` | Its stdout is given to Claude as `context.txt` (e.g. an upstream version line). A failure only warns. |
-| `changelog_path` | string | `"CHANGELOG.md"` | The entry is inserted above the first `## ` heading, as `## vX.Y.Z, YYYY-MM-DD` (UTC). |
-| `version_files` | string | `""` | Whitespace-separated JSON files whose top-level `"version"` is set to the new version. The line is edited in place and `jq` confirms the result. |
+| `changelog_path` | string | `"CHANGELOG.md"` | With `tag: true`, the entry is inserted above the first `## ` heading, as `## vX.Y.Z, YYYY-MM-DD` (UTC). |
+| `version_files` | string | `""` | Whitespace-separated JSON files whose top-level `"version"` is set to the new version when tagging. The line is edited in place and `jq` confirms the result. |
 | `allow_major` | boolean | `true` | At 1.0.0 or later, `breaking` bumps major. `false` bumps minor. |
 | `go_apidiff` | boolean | `false` | Add a Go exported-API report to Claude's context. |
 | `go_module` | string | `""` | Module path for apidiff. Empty reads `go.mod`. |
 | `go_version_file` | string | `"go.mod"` | Where `setup-go` reads the Go version for apidiff. |
 | `apidiff_version` | string | pinned | Exact `golang.org/x/exp` version apidiff comes from. |
-| `max_diff_bytes` | number | `200000` | The diff given to Claude is truncated at this size. |
+| `max_diff_bytes` | number | `200000` | The diffs given to Claude are truncated at this size. |
 | `max_changelog_bytes` | number | `4000` | Larger generated entries are rejected. |
 | `claude_model` | string | `""` | `--model` for claudebox. |
-| `claude_timeout_minutes` | number | `20` | `describe` timeout. |
-| `github_release` | boolean | `true` | Cut a GitHub release for the new tag. |
-| `clawhub_publish` | boolean | `false` | Publish to ClawHub for the new tag. |
-| `clawhub_skill_names` | string | `""` | Passed to `clawhub-publish.yml` as `skill_names`. |
-| `clawhub_plugin_names` | string | `""` | Passed to `clawhub-publish.yml` as `plugin_names`. |
+| `claude_timeout_minutes` | number | `20` | `review` timeout. |
 | `failure_issue_title` | string | `"Scheduled regeneration failed"` | Title of the single failure issue. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. Must be ephemeral, because the claudebox action mounts the Docker socket. |
 
@@ -769,15 +768,15 @@ The `release` job pushes to the triggering branch with `GITHUB_TOKEN`. Branch pr
 
 | Secret | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | one of the two | Passed to the claudebox action in the fix attempts and `describe`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Passed to the claudebox action in the fix attempts and `describe`. |
-| `CLAWHUB_TOKEN` | with `clawhub_publish` | Passed to `clawhub-publish.yml` as `clawhub_token`. |
+| `ANTHROPIC_API_KEY` | one of the two | Passed to the claudebox action in the fix attempts and `review`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Passed to the claudebox action in the fix attempts and `review`. |
+| `GH_PAT` | no | Fine-grained personal access token with Contents read and write on the repository. Used only by `commit` to push, so the repository's own workflows run on the new commit and tag. |
 
 The calling job must grant `contents: write` and `issues: write`.
 
 ### Example
 
-A Go client regenerated daily, with its plugin manifest version kept in step:
+A Go client regenerated daily and released through its own tag pipeline:
 
 ```yaml
 name: regen
@@ -794,14 +793,18 @@ jobs:
       issues: write
     uses: psyb0t/reusable-github-workflows/.github/workflows/regen-and-update-repo.yml@master
     with:
+      tag: true
       version_files: ".agents/.codex-plugin/plugin.json"
       go_apidiff: true
-      clawhub_publish: true
-      clawhub_skill_names: '["my-skill"]'
-      clawhub_plugin_names: "[]"
+      fix_protected_paths: |
+        .github/*
+        Makefile
+        AGENTS.md
+        .agents/rules/*
+        scripts/fetch-spec.sh
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+      GH_PAT: ${{ secrets.GH_PAT }}
 ```
 
 The logic lives in `scripts/regen-check.sh`, `scripts/regen-fix.sh`, `scripts/regen-context.sh` and `scripts/regen-release.sh`, which the jobs fetch from this repository's `master` like the other script-backed workflows.

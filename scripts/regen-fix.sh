@@ -7,7 +7,7 @@
 #   regen-fix.sh guard     compares the tree after the attempt with the one
 #                          recorded by prepare, rejects edits to protected
 #                          paths and added check-suppression markers, and keeps
-#                          Claude's notes and diff for the describe step
+#                          Claude's notes and diff for the review step
 #
 # Layout under FIX_DIR:
 #   check-N.log                 output of check run N (from regen-check.sh)
@@ -48,6 +48,22 @@ require_env() {
 		log ERROR "required environment variable is empty name=${name}"
 		exit 1
 	fi
+}
+
+# Every glob a fix attempt must not touch, one per line: the floor the
+# workflow always enforces (.github/, the changelog and the version files it
+# writes itself) plus the caller's PROTECTED_PATHS. A glob matches with bash
+# [[ == ]], where * also crosses directories.
+protected_globs() {
+	local file
+	{
+		printf '.github/*\n'
+		[[ -n "${CHANGELOG_PATH:-}" ]] && printf '%s\n' "${CHANGELOG_PATH}"
+		for file in ${VERSION_FILES:-}; do
+			printf '%s\n' "${file}"
+		done
+		printf '%s\n' "${PROTECTED_PATHS:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+	} | awk 'NF && !seen[$0]++'
 }
 
 tree_state() {
@@ -165,13 +181,13 @@ How to fix:
   pinned versions in the Dockerfiles, or a dependency bump. Regenerate with the
   repository's generate target afterwards when your fix changes generator
   input.
-- Do not weaken the checks. Never edit .github/, AGENTS.md, .agents/rules/,
-  .gitleaks.toml, .gitleaksignore, .golangci.yml, .semgrepignore or the lint
-  and security scripts. Never add skips or suppressions (t.Skip, nolint,
+- Do not weaken the checks. Never add skips or suppressions (t.Skip, nolint,
   nosemgrep, gitleaks:allow, #nosec, noqa, eslint-disable, shellcheck
   disable). Never delete or loosen a test to make it pass. The workflow
-  rejects all of these.
-- Do not edit CHANGELOG.md or version numbers; the workflow writes them.
+  rejects these.
+- Never edit the protected paths listed at the end of this task. The
+  workflow rejects any change to them, including the changelog and version
+  files, which it writes itself.
 - No attribution anywhere: no comment, string or file may say it was written,
   generated or fixed by Claude, Claude Code, Anthropic or any AI tool.
 - Run the failing checks yourself until they pass. Leave no stray files behind.
@@ -180,7 +196,10 @@ How to fix:
 When you are done, reply with a short plain summary of what you changed and
 why, as "- " bullet lines, following writing-rules.md. If you could not fix it,
 say what blocks it.
+
+Protected paths (globs, * also matches across directories):
 EOF
+	protected_globs | sed 's/^/- /' >>"${out}"
 }
 
 # Notes and changed files of this attempt in the job summary. The notes are
@@ -197,9 +216,9 @@ summarize() {
 }
 
 guard() {
-	local dir pre post changed bad added notes file line
+	local dir pre post changed bad added notes file line glob
+	local -a globs
 	require_env ATTEMPT
-	require_env PROTECTED_PATHS_RE
 
 	dir="${FIX_DIR}/attempt-${ATTEMPT}"
 	if [[ ! -s "${dir}/pre-tree" ]]; then
@@ -228,9 +247,19 @@ guard() {
 	printf '%s\n' "${changed}"
 	echo "::endgroup::"
 
-	bad="$(grep -E "${PROTECTED_PATHS_RE}" <<<"${changed}" || true)"
+	mapfile -t globs < <(protected_globs)
+	bad=""
+	while IFS= read -r file; do
+		for glob in "${globs[@]}"; do
+			# shellcheck disable=SC2053 # the right side is a glob on purpose
+			if [[ "${file}" == ${glob} ]]; then
+				bad+="${file} "
+				break
+			fi
+		done
+	done <<<"${changed}"
 	if [[ -n "${bad}" ]]; then
-		echo "::error::Fix attempt ${ATTEMPT} edited protected paths: $(tr '\n' ' ' <<<"${bad}")"
+		echo "::error::Fix attempt ${ATTEMPT} edited protected paths: ${bad}"
 		exit 1
 	fi
 

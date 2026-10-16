@@ -1,12 +1,13 @@
 name: Regen And Update Repo Workflow
 
-# Regenerate, fix, describe, release. Runs the repo's own generate command;
+# Regenerate, fix, review, commit. Runs the repo's own generate command;
 # when the tree changes, runs the repo's checks. When they fail, Claude
 # (through the psyb0t/docker-claudebox action) fixes the checkout and the
 # checks run again, up to `fix_attempts` times, each attempt seeing every
 # earlier failure. Then Claude describes, classifies and reviews the change,
-# and the workflow commits, tags and pushes the result and publishes the
-# release.
+# and the workflow commits, tags and pushes the result. Publishing is the
+# repository's own business: push with GH_PAT and its push and tag workflows
+# run as if a person pushed.
 #
 # Typical use: a generated API client refreshed on a schedule from a spec its
 # upstream publishes. Nothing here knows about specs or languages; the Go
@@ -25,27 +26,24 @@ name: Regen And Update Repo Workflow
 #     `fix_protected_paths`, added check suppressions (t.Skip, nolint,
 #     nosemgrep, ...) and AI attribution, and the repo's checks must pass
 #     afterwards. The patch released is built from that checked tree.
-#   - `describe` runs claudebox with `contents: read` and only the Claude
+#   - `review` runs claudebox with `contents: read` and only the Claude
 #     credential. No GitHub token is passed in. Its input is a context
 #     artifact (diff, stats, changelog head, reports), mounted read-only.
-#   - Claude's output is treated as untrusted text. `release` validates every
+#   - Claude's output is treated as untrusted text. `commit` validates every
 #     file and falls back to a deterministic changelog entry, subject and
 #     `fix` change kind when something is missing or malformed. The version is
 #     computed by the workflow from the last tag; Claude only picks the kind.
-#   - Only `release` can write to the repo, and it executes nothing Claude
+#   - Only `commit` can write to the repo, and it executes nothing Claude
 #     wrote.
 #
 # Jobs:
 #   regen          generate, detect changes, run checks, fix loop, build
 #                  patch + context
-#   describe       claudebox: changelog.md, subject.txt, change-kind.txt,
+#   review         claudebox: changelog.md, subject.txt, change-kind.txt,
 #                  bump-reason.txt, verdict.txt (ok or block: reason)
-#   release        apply patch, validate, version, changelog, version files,
-#                  commit, annotated tag, atomic push
-#   github-release / clawhub
-#                  call release-workflow.yml / clawhub-publish.yml with the new
-#                  tag, because a tag pushed with GITHUB_TOKEN does not trigger
-#                  the repo's own tag pipeline
+#   commit         apply patch, validate, version, changelog, version files,
+#                  commit, annotated tag (unless tag: false), atomic push with
+#                  GH_PAT when set, GITHUB_TOKEN otherwise
 #   report-failure scheduled runs only: open or update one issue
 #
 # Example caller:
@@ -64,6 +62,7 @@ name: Regen And Update Repo Workflow
 #         go_apidiff: true
 #       secrets:
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#         GH_PAT: ${{ secrets.GH_PAT }}
 
 on:
   workflow_call:
@@ -89,9 +88,11 @@ on:
         default: 30
         type: number
       fix_protected_paths:
-        description: "Extended regex over repo-relative paths a fix attempt must not touch. A match fails the run."
+        description: "Paths a fix attempt must not touch, one glob per line (* also matches across directories). .github/, changelog_path and version_files are always protected on top of this list."
         required: false
-        default: "^(\\.github/|AGENTS\\.md$|\\.agents/rules/|\\.gitleaks|\\.golangci|\\.semgrep|scripts/(sec|lint)\\.sh$|CHANGELOG\\.md$)"
+        default: |
+          .github/*
+          Makefile
         type: string
       block_on_review:
         description: "Stop the release when the review verdict is 'block: <reason>', or when it is missing for a release that includes automated fixes."
@@ -113,6 +114,11 @@ on:
         required: false
         default: ""
         type: string
+      tag:
+        description: "Bump the version, prepend the changelog entry, update version_files and push an annotated vX.Y.Z tag with the commit. false (the default) commits and pushes the regenerated code only."
+        required: false
+        default: false
+        type: boolean
       allow_major:
         description: "At 1.0.0 or later, a 'breaking' change kind bumps major. Set false to bump minor instead. No effect before 1.0.0, where breaking always bumps minor."
         required: false
@@ -154,30 +160,10 @@ on:
         default: ""
         type: string
       claude_timeout_minutes:
-        description: "Timeout for the describe job."
+        description: "Timeout for the review job."
         required: false
         default: 20
         type: number
-      github_release:
-        description: "Cut a GitHub release for the new tag (release-workflow.yml)."
-        required: false
-        default: true
-        type: boolean
-      clawhub_publish:
-        description: "Publish to ClawHub for the new tag (clawhub-publish.yml). Needs the CLAWHUB_TOKEN secret."
-        required: false
-        default: false
-        type: boolean
-      clawhub_skill_names:
-        description: "clawhub-publish.yml skill_names. Empty selects all; [] selects none."
-        required: false
-        default: ""
-        type: string
-      clawhub_plugin_names:
-        description: "clawhub-publish.yml plugin_names. Empty selects all; [] selects none."
-        required: false
-        default: ""
-        type: string
       failure_issue_title:
         description: "Title of the single issue a failed scheduled run opens or comments on."
         required: false
@@ -195,8 +181,8 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: "Claude Code OAuth token for claudebox. Set this, ANTHROPIC_API_KEY, or both."
         required: false
-      CLAWHUB_TOKEN:
-        description: "ClawHub token, only used when clawhub_publish is true."
+      GH_PAT:
+        description: "Personal access token with Contents read and write on this repository. When set, release pushes the commit and tag with it, so the repository's own push and tag workflows run as if a person pushed. Without it, the push uses GITHUB_TOKEN, which starts no workflows."
         required: false
 
 # One run per repository at a time, never cancelled: a run that already
@@ -293,6 +279,9 @@ jobs:
           MAX_ATTEMPTS: ${{ inputs.fix_attempts }}
           MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
           WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
 
       # Claude works directly on the checkout. A failed or timed-out attempt
@@ -316,7 +305,9 @@ jobs:
         env:
           FIX_DIR: ${{ runner.temp }}/regen-fix
           ATTEMPT: "1"
-          PROTECTED_PATHS_RE: ${{ inputs.fix_protected_paths }}
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
           RESULT: ${{ steps.fix1.outputs.result }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
 
@@ -338,6 +329,9 @@ jobs:
           MAX_ATTEMPTS: ${{ inputs.fix_attempts }}
           MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
           WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
 
       # Claude works directly on the checkout. A failed or timed-out attempt
@@ -361,7 +355,9 @@ jobs:
         env:
           FIX_DIR: ${{ runner.temp }}/regen-fix
           ATTEMPT: "2"
-          PROTECTED_PATHS_RE: ${{ inputs.fix_protected_paths }}
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
           RESULT: ${{ steps.fix2.outputs.result }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
 
@@ -383,6 +379,9 @@ jobs:
           MAX_ATTEMPTS: ${{ inputs.fix_attempts }}
           MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
           WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
 
       # Claude works directly on the checkout. A failed or timed-out attempt
@@ -406,7 +405,9 @@ jobs:
         env:
           FIX_DIR: ${{ runner.temp }}/regen-fix
           ATTEMPT: "3"
-          PROTECTED_PATHS_RE: ${{ inputs.fix_protected_paths }}
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
           RESULT: ${{ steps.fix3.outputs.result }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
 
@@ -504,8 +505,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  describe:
-    name: Describe
+  review:
+    name: Review
     needs: [regen]
     if: needs.regen.outputs.changed == 'true'
     runs-on: ${{ inputs.runs_on }}
@@ -532,45 +533,47 @@ jobs:
         with:
           prompt-file: ${{ runner.temp }}/regen-prompt/prompt.md
           context-path: ${{ runner.temp }}/regen-context
-          output-path: ${{ runner.temp }}/regen-description
+          output-path: ${{ runner.temp }}/regen-review
           model: ${{ inputs.claude_model }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
       # Upload even after a failure so a partial output can be inspected;
       # release validates it and falls back when it is missing or malformed.
-      - name: Upload description
+      - name: Upload review
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: regen-description
-          path: ${{ runner.temp }}/regen-description
+          name: regen-review
+          path: ${{ runner.temp }}/regen-review
           if-no-files-found: warn
           retention-days: 7
 
-  # Runs when describe failed too: the deterministic fallback covers it. Only a
-  # cancelled describe (or a failed regen) stops the release.
-  release:
-    name: Release
-    needs: [regen, describe]
+  # Runs when review failed too: the deterministic fallback covers it. Only a
+  # cancelled review (or a failed regen) stops the commit.
+  commit:
+    name: Commit and push
+    needs: [regen, review]
     if: >-
       always()
       && needs.regen.result == 'success'
       && needs.regen.outputs.changed == 'true'
-      && needs.describe.result != 'cancelled'
+      && needs.review.result != 'cancelled'
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: write
     outputs:
       tag: ${{ steps.prepare.outputs.tag }}
     steps:
-      # Credentials persist for the push below. Nothing in this job executes
-      # repository code or anything Claude wrote.
+      # Credentials persist for the push below: GH_PAT when set, so the push
+      # starts the repository's own workflows, GITHUB_TOKEN otherwise. Nothing
+      # in this job executes repository code or anything Claude wrote.
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.regen.outputs.base_sha }}
           fetch-depth: 0
+          token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Checkout reusable workflow tools
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -598,26 +601,27 @@ jobs:
           name: regen-context
           path: ${{ runner.temp }}/regen-context
 
-      # Missing when describe failed before uploading; the release script
+      # Missing when review failed before uploading; the release script
       # then uses its fallbacks.
-      - name: Download description
+      - name: Download review
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: regen-description
-          path: ${{ runner.temp }}/regen-description
+          name: regen-review
+          path: ${{ runner.temp }}/regen-review
 
       - name: Prepare commit and tag
         id: prepare
         env:
           PATCH_FILE: ${{ runner.temp }}/regen-patch/regen.patch
-          CLAUDE_OUT_DIR: ${{ runner.temp }}/regen-description
+          CLAUDE_OUT_DIR: ${{ runner.temp }}/regen-review
           CONTEXT_DIR: ${{ runner.temp }}/regen-context
           CHANGELOG_PATH: ${{ inputs.changelog_path }}
           VERSION_FILES: ${{ inputs.version_files }}
           ALLOW_MAJOR: ${{ inputs.allow_major }}
           MAX_CHANGELOG_BYTES: ${{ inputs.max_changelog_bytes }}
           BLOCK_ON_REVIEW: ${{ inputs.block_on_review }}
+          TAG_ENABLED: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p "${CLAUDE_OUT_DIR}"
@@ -632,42 +636,18 @@ jobs:
           TAG: ${{ steps.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          git push --atomic origin "HEAD:refs/heads/${BRANCH}" "refs/tags/${TAG}"
-          echo "Pushed ${BRANCH} and ${TAG}." >>"${GITHUB_STEP_SUMMARY}"
-
-  github-release:
-    name: GitHub release
-    needs: [release]
-    if: inputs.github_release && needs.release.outputs.tag != ''
-    permissions:
-      contents: write
-    uses: psyb0t/reusable-github-workflows/.github/workflows/release-workflow.yml@master
-    with:
-      tag: ${{ needs.release.outputs.tag }}
-      runs_on: ${{ inputs.runs_on }}
-
-  clawhub:
-    name: ClawHub
-    needs: [release]
-    if: inputs.clawhub_publish && needs.release.outputs.tag != ''
-    permissions:
-      contents: read
-    uses: psyb0t/reusable-github-workflows/.github/workflows/clawhub-publish.yml@master
-    with:
-      tag: ${{ needs.release.outputs.tag }}
-      skill_names: ${{ inputs.clawhub_skill_names }}
-      plugin_names: ${{ inputs.clawhub_plugin_names }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets:
-      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
+          refs=("HEAD:refs/heads/${BRANCH}")
+          [ -n "${TAG}" ] && refs+=("refs/tags/${TAG}")
+          git push --atomic origin "${refs[@]}"
+          echo "Pushed ${refs[*]}." >>"${GITHUB_STEP_SUMMARY}"
 
   report-failure:
     name: Report failure
-    needs: [regen, describe, release]
+    needs: [regen, review, commit]
     if: >-
       always()
       && github.event_name == 'schedule'
-      && (needs.regen.result == 'failure' || needs.release.result == 'failure')
+      && (needs.regen.result == 'failure' || needs.commit.result == 'failure')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       issues: write
@@ -678,7 +658,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REGEN_RESULT: ${{ needs.regen.result }}
-          RELEASE_RESULT: ${{ needs.release.result }}
+          COMMIT_RESULT: ${{ needs.commit.result }}
           TITLE: ${{ inputs.failure_issue_title }}
         run: |
           set -euo pipefail
@@ -688,7 +668,7 @@ jobs:
 
           body="The scheduled regeneration failed in this run: ${RUN_URL}
 
-          Job results: regen=${REGEN_RESULT}, release=${RELEASE_RESULT}.
+          Job results: regen=${REGEN_RESULT}, commit=${COMMIT_RESULT}.
 
           Nothing was pushed by the failed job. I need to read the run log, fix the cause, and close this issue once a scheduled run passes again."
 

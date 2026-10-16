@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.0 (2026-10-16)
+
+**Breaking:** `regen-and-update-repo.yml` no longer publishes. The `github-release` and `clawhub` jobs, the `github_release`, `clawhub_publish`, `clawhub_skill_names` and `clawhub_plugin_names` inputs and the `CLAWHUB_TOKEN` secret are removed; callers must drop them. Pass the new `GH_PAT` secret instead, and the push runs the repository's own workflows, which do the publishing. Callers that want a version tag must set `tag: true`, because tagging now defaults to off.
+
+- New `tag` input, default `false`. Without it, the regenerated code is committed with Claude's subject and the changelog text as the message body, with no version, changelog entry or tag. With `tag: true` it behaves as before.
+- New optional `GH_PAT` secret. The job that pushes, renamed from `release` to `commit`, checks out with it, so the commit and tag count as a push by the token's owner and start the repository's push and tag workflows. Without it the push uses `GITHUB_TOKEN`. Only that job receives the token.
+- The `describe` job is renamed `review` and its artifact `regen-review`, since it reviews the change and returns the verdict besides writing the changelog text.
+- `fix_protected_paths` is now a list of globs, one per line, declared by each repository. The default is `.github/*` and `Makefile`; `.github/*`, `changelog_path` and `version_files` are always protected on top of it. The fix prompt lists the actual paths.
+
 ## v0.52.2 (2026-10-16)
 
 - The claudebox action is pinned to v2.8.1, which trims whitespace from the Claude credentials. A secret saved with a leading space made every claudebox step fail before Claude started.

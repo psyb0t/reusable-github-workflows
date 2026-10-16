@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the read-only context and the prompt for the describe step of
+# Builds the read-only context and the prompt for the review step of
 # regen-and-update-repo.yml, from a working tree that already holds the
 # regenerated (uncommitted) changes.
 #
