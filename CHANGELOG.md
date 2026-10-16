@@ -4,6 +4,14 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.52.0 (2026-10-16)
+
+- `regen-and-update-repo.yml` fixes failing checks. When `check_commands` fail after regeneration, Claude edits the checkout through the claudebox action and the checks run again, up to `fix_attempts` times (default 3, `0` turns it off). Each attempt gets the latest check output, the diff so far, every earlier check log, each earlier attempt's summary and diff, and writing rules. The prompt makes Claude follow the repository's `AGENTS.md` and `.agents/rules/`, use its Make targets and fix causes at their source.
+- A guard fails the run when a fix attempt touches `fix_protected_paths` (workflows, agent rules, gitleaks, golangci and semgrep config, the lint and security scripts, the changelog), adds a check suppression such as `t.Skip`, `nolint` or `nosemgrep`, or adds AI attribution. The patch is built from the tree that passed the checks.
+- `describe` gets the fix notes and diff, the writing rules and the repository rules, and writes `verdict.txt` (`ok` or `block: <reason>`). With `block_on_review: true` (the default) a block stops the release, and so does a missing verdict when the release includes fixes.
+- The fix attempts use the same `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` secret as `describe`. Callers need no changes.
+- The claudebox action is pinned to v2.7.0, which runs the latest minimal claudebox image.
+
 ## v0.51.0 (2026-10-16)
 
 **Breaking:** `claudebox.yml` is removed. claudebox now ships its own GitHub Action, so callers of `claudebox.yml` switch to a job step with `uses: psyb0t/docker-claudebox@v2.6.0`. Download the context artifact, pass `context-path`, `prompt-file` or `prompt`, `output-path` and the Claude credential as inputs, and upload the output directory yourself. Set `timeout-minutes` on the job.

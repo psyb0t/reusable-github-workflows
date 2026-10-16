@@ -42,3 +42,4 @@ ANUSTIMES.md
 reusable-flow-refactor.md
 
 .testing/
+__pycache__/

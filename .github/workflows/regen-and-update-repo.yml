@@ -1,9 +1,12 @@
 name: Regen And Update Repo Workflow
 
-# Regenerate, describe, release. Runs the repo's own generate command; when the
-# tree changes, runs the repo's checks, asks Claude (through the psyb0t/docker-claudebox action) to
-# describe the change and classify it, then commits, tags and pushes the
-# result and publishes the release.
+# Regenerate, fix, describe, release. Runs the repo's own generate command;
+# when the tree changes, runs the repo's checks. When they fail, Claude
+# (through the psyb0t/docker-claudebox action) fixes the checkout and the
+# checks run again, up to `fix_attempts` times, each attempt seeing every
+# earlier failure. Then Claude describes, classifies and reviews the change,
+# and the workflow commits, tags and pushes the result and publishes the
+# release.
 #
 # Typical use: a generated API client refreshed on a schedule from a spec its
 # upstream publishes. Nothing here knows about specs or languages; the Go
@@ -16,6 +19,12 @@ name: Regen And Update Repo Workflow
 # the workflow files.
 #
 # Trust boundary around Claude:
+#   - The fix attempts run in `regen`, which has `contents: read`, no GitHub
+#     token in the checkout and only the Claude credential. Claude edits the
+#     checkout; a guard (scripts/regen-fix.sh) rejects edits to
+#     `fix_protected_paths`, added check suppressions (t.Skip, nolint,
+#     nosemgrep, ...) and AI attribution, and the repo's checks must pass
+#     afterwards. The patch released is built from that checked tree.
 #   - `describe` runs claudebox with `contents: read` and only the Claude
 #     credential. No GitHub token is passed in. Its input is a context
 #     artifact (diff, stats, changelog head, reports), mounted read-only.
@@ -27,9 +36,10 @@ name: Regen And Update Repo Workflow
 #     wrote.
 #
 # Jobs:
-#   regen          generate, detect changes, run checks, build patch + context
+#   regen          generate, detect changes, run checks, fix loop, build
+#                  patch + context
 #   describe       claudebox: changelog.md, subject.txt, change-kind.txt,
-#                  bump-reason.txt
+#                  bump-reason.txt, verdict.txt (ok or block: reason)
 #   release        apply patch, validate, version, changelog, version files,
 #                  commit, annotated tag, atomic push
 #   github-release / clawhub
@@ -68,6 +78,26 @@ on:
         required: false
         default: "make lint && make test && make sec"
         type: string
+      fix_attempts:
+        description: "How many times Claude may fix the checkout when the checks fail (0 to 3). 0 turns the fix loop off: a failed check stops the run."
+        required: false
+        default: 3
+        type: number
+      fix_timeout_minutes:
+        description: "Timeout for each fix attempt."
+        required: false
+        default: 30
+        type: number
+      fix_protected_paths:
+        description: "Extended regex over repo-relative paths a fix attempt must not touch. A match fails the run."
+        required: false
+        default: "^(\\.github/|AGENTS\\.md$|\\.agents/rules/|\\.gitleaks|\\.golangci|\\.semgrep|scripts/(sec|lint)\\.sh$|CHANGELOG\\.md$)"
+        type: string
+      block_on_review:
+        description: "Stop the release when the review verdict is 'block: <reason>', or when it is missing for a release that includes automated fixes."
+        required: false
+        default: true
+        type: boolean
       context_command:
         description: "Optional shell whose stdout is given to the description step as context.txt (e.g. a grep for an upstream version line). A failure only warns."
         required: false
@@ -209,6 +239,15 @@ jobs:
       - name: Move reusable workflow tools out of the workspace
         run: mv .reusable-workflow-tools "${RUNNER_TEMP}/reusable-workflow-tools"
 
+      - name: Validate inputs
+        env:
+          FIX_ATTEMPTS: ${{ inputs.fix_attempts }}
+        run: |
+          case "${FIX_ATTEMPTS}" in
+            0 | 1 | 2 | 3) ;;
+            *) echo "::error::fix_attempts must be 0 to 3, got ${FIX_ATTEMPTS}"; exit 1 ;;
+          esac
+
       - name: Generate
         env:
           GENERATE_COMMAND: ${{ inputs.generate_command }}
@@ -233,7 +272,161 @@ jobs:
           echo "${changes}"
           echo "::endgroup::"
 
-      # Snapshot BEFORE the checks, then prove the checks did not touch it.
+      # Every check run keeps its log for the fix loop and fails the run only
+      # when the checks themselves changed the tree. A failed check sets
+      # passed=false and the fix loop below takes over.
+      - name: Checks
+        id: check0
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-'
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "0"
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-check.sh"
+
+      - name: Prepare fix attempt 1
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check0.outputs.passed == 'false' && inputs.fix_attempts >= 1
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "1"
+          MAX_ATTEMPTS: ${{ inputs.fix_attempts }}
+          MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+          WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
+
+      # Claude works directly on the checkout. A failed or timed-out attempt
+      # is not fatal: the guard and the checks below decide.
+      - name: Fix attempt 1
+        id: fix1
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check0.outputs.passed == 'false' && inputs.fix_attempts >= 1
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.fix_timeout_minutes }}
+        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        with:
+          prompt-file: ${{ runner.temp }}/regen-fix/attempt-1/prompt.md
+          context-path: ${{ runner.temp }}/regen-fix/attempt-1/context
+          output-path: ${{ github.workspace }}
+          model: ${{ inputs.claude_model }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Guard fix attempt 1
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check0.outputs.passed == 'false' && inputs.fix_attempts >= 1
+        env:
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "1"
+          PROTECTED_PATHS_RE: ${{ inputs.fix_protected_paths }}
+          RESULT: ${{ steps.fix1.outputs.result }}
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
+
+      - name: Checks after fix attempt 1
+        id: check1
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check0.outputs.passed == 'false' && inputs.fix_attempts >= 1
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "1"
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-check.sh"
+
+      - name: Prepare fix attempt 2
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check1.outputs.passed == 'false' && inputs.fix_attempts >= 2
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "2"
+          MAX_ATTEMPTS: ${{ inputs.fix_attempts }}
+          MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+          WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
+
+      # Claude works directly on the checkout. A failed or timed-out attempt
+      # is not fatal: the guard and the checks below decide.
+      - name: Fix attempt 2
+        id: fix2
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check1.outputs.passed == 'false' && inputs.fix_attempts >= 2
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.fix_timeout_minutes }}
+        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        with:
+          prompt-file: ${{ runner.temp }}/regen-fix/attempt-2/prompt.md
+          context-path: ${{ runner.temp }}/regen-fix/attempt-2/context
+          output-path: ${{ github.workspace }}
+          model: ${{ inputs.claude_model }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Guard fix attempt 2
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check1.outputs.passed == 'false' && inputs.fix_attempts >= 2
+        env:
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "2"
+          PROTECTED_PATHS_RE: ${{ inputs.fix_protected_paths }}
+          RESULT: ${{ steps.fix2.outputs.result }}
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
+
+      - name: Checks after fix attempt 2
+        id: check2
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check1.outputs.passed == 'false' && inputs.fix_attempts >= 2
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "2"
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-check.sh"
+
+      - name: Prepare fix attempt 3
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check2.outputs.passed == 'false' && inputs.fix_attempts >= 3
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "3"
+          MAX_ATTEMPTS: ${{ inputs.fix_attempts }}
+          MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+          WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
+
+      # Claude works directly on the checkout. A failed or timed-out attempt
+      # is not fatal: the guard and the checks below decide.
+      - name: Fix attempt 3
+        id: fix3
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check2.outputs.passed == 'false' && inputs.fix_attempts >= 3
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.fix_timeout_minutes }}
+        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        with:
+          prompt-file: ${{ runner.temp }}/regen-fix/attempt-3/prompt.md
+          context-path: ${{ runner.temp }}/regen-fix/attempt-3/context
+          output-path: ${{ github.workspace }}
+          model: ${{ inputs.claude_model }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Guard fix attempt 3
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check2.outputs.passed == 'false' && inputs.fix_attempts >= 3
+        env:
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "3"
+          PROTECTED_PATHS_RE: ${{ inputs.fix_protected_paths }}
+          RESULT: ${{ steps.fix3.outputs.result }}
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
+
+      - name: Checks after fix attempt 3
+        id: check3
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check2.outputs.passed == 'false' && inputs.fix_attempts >= 3
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "3"
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-check.sh"
+
+      - name: Require passing checks
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && !(steps.check0.outputs.passed == 'true' || steps.check1.outputs.passed == 'true' || steps.check2.outputs.passed == 'true' || steps.check3.outputs.passed == 'true')
+        run: |
+          echo "::error::The checks still fail after ${{ inputs.fix_attempts }} fix attempt(s). Logs: the Checks steps above."
+          exit 1
+
+      # Built from the checked tree, so it carries the regeneration and every
+      # fix that made the checks pass.
       - name: Build patch
         if: steps.detect.outputs.changed == 'true'
         run: |
@@ -241,25 +434,6 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/regen-patch"
           git add --intent-to-add --all
           git diff --binary HEAD >"${RUNNER_TEMP}/regen-patch/regen.patch"
-          sha256sum "${RUNNER_TEMP}/regen-patch/regen.patch" | cut -d' ' -f1 >"${RUNNER_TEMP}/regen-patch.sha256"
-
-      - name: Checks
-        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-'
-        env:
-          CHECK_COMMANDS: ${{ inputs.check_commands }}
-        run: bash -euo pipefail -c "${CHECK_COMMANDS}"
-
-      - name: Verify checks left the tree alone
-        if: steps.detect.outputs.changed == 'true'
-        run: |
-          set -euo pipefail
-          git add --intent-to-add --all
-          now="$(git diff --binary HEAD | sha256sum | cut -d' ' -f1)"
-          if [ "${now}" != "$(cat "${RUNNER_TEMP}/regen-patch.sha256")" ]; then
-            echo "::error::The check commands changed tracked or new files. Make them read-only (no --fix, no regeneration)."
-            git status --porcelain
-            exit 1
-          fi
 
       - name: Set up Go (apidiff)
         if: steps.detect.outputs.changed == 'true' && inputs.go_apidiff
@@ -288,6 +462,8 @@ jobs:
           GO_APIDIFF: ${{ inputs.go_apidiff }}
           GO_MODULE: ${{ inputs.go_module }}
           APIDIFF_BIN: ${{ runner.temp }}/apidiff-bin/apidiff
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-context.sh"
 
       - name: Upload patch
@@ -341,7 +517,7 @@ jobs:
       # The action mounts the runner's Docker socket into claudebox; this job
       # holds only the context and the Claude credential.
       - name: Run claudebox
-        uses: psyb0t/docker-claudebox@945a623936cebdc1f03d327b32835110e97d6167 # v2.6.0
+        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
         with:
           prompt-file: ${{ runner.temp }}/regen-prompt/prompt.md
           context-path: ${{ runner.temp }}/regen-context
@@ -430,6 +606,7 @@ jobs:
           VERSION_FILES: ${{ inputs.version_files }}
           ALLOW_MAJOR: ${{ inputs.allow_major }}
           MAX_CHANGELOG_BYTES: ${{ inputs.max_changelog_bytes }}
+          BLOCK_ON_REVIEW: ${{ inputs.block_on_review }}
         run: |
           set -euo pipefail
           mkdir -p "${CLAUDE_OUT_DIR}"

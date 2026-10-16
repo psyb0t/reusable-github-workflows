@@ -2,7 +2,8 @@
 # Release step of regen-and-update-repo.yml. Runs in a checkout of the commit
 # the regeneration started from, with full history and tags.
 #
-#   1. Applies the regeneration patch.
+#   1. Applies the regeneration patch, and stops when the review verdict
+#      blocks the release (see check_verdict).
 #   2. Reads claudebox's output (CLAUDE_OUT_DIR) as UNTRUSTED input and
 #      validates every file. Anything invalid falls back to a deterministic
 #      value built from the diff stat and the apidiff report.
@@ -239,6 +240,40 @@ bump_version_files() {
 	done
 }
 
+# verdict.txt is "ok" or "block: <reason>". With BLOCK_ON_REVIEW=true a block
+# stops the release. A missing or malformed verdict also stops it when the fix
+# loop changed code (CONTEXT_DIR/fixes.md exists): a fix nobody reviewed must
+# not ship. Without fixes it only warns, like the other fallbacks.
+check_verdict() {
+	local raw="" reason
+	if [[ -f "${CLAUDE_OUT_DIR}/verdict.txt" ]]; then
+		raw="$(tr -d '\r' <"${CLAUDE_OUT_DIR}/verdict.txt" | sed -e '/./,$!d' | head -n 1)"
+	fi
+	case "${raw}" in
+		ok | OK | Ok)
+			log INFO "review verdict ok"
+			return 0
+			;;
+		block:* | BLOCK:* | Block:*)
+			reason="${raw#*:}"
+			reason="${reason:0:300}"
+			summary "### Release blocked by review" "" "Reason (model output, shown as code): \`${reason//\`/\'}\`"
+			if [[ "${BLOCK_ON_REVIEW:-true}" == "true" ]]; then
+				echo "::error::Review blocked the release:${reason}"
+				exit 1
+			fi
+			echo "::warning::Review would block the release (block_on_review is off):${reason}"
+			return 0
+			;;
+	esac
+	if [[ -f "${CONTEXT_DIR}/fixes.md" && "${BLOCK_ON_REVIEW:-true}" == "true" ]]; then
+		echo "::error::No valid review verdict for a release that includes automated fixes"
+		exit 1
+	fi
+	log WARN "verdict.txt missing or invalid value=${raw:0:40}"
+	echo "::warning::No valid review verdict; releasing without one"
+}
+
 main() {
 	local last kind reason bump tag version subject entry_file major
 
@@ -247,6 +282,8 @@ main() {
 	require_env CONTEXT_DIR
 	require_env CHANGELOG_PATH
 	require_env MAX_CHANGELOG_BYTES
+
+	check_verdict
 
 	git apply --binary --index "${PATCH_FILE}"
 	if git diff --cached --quiet HEAD; then
