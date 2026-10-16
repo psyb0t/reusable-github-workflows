@@ -706,7 +706,7 @@ Keeps generated code current without a human in the loop. It runs the repository
 | Job | Permissions | What it does |
 |---|---|---|
 | `regen` | `contents: read` | Full-history checkout, `generate_command`, `git status --porcelain`. On a change: run `check_commands` (failing if the checks alter the tree), run the fix loop when they fail, build the patch from the checked tree (`git add -N` + `git diff --binary`, so new files are included), optionally run `apidiff`, and upload three artifacts: `regen-patch`, `regen-context`, `regen-prompt`. |
-| `describe` | `contents: read` | Runs `psyb0t/docker-claudebox@v2.8.0` with `regen-context` mounted read-only and uploads its output directory as `regen-description`. The action mounts the runner's Docker socket. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt`, `bump-reason.txt` and `verdict.txt`. |
+| `describe` | `contents: read` | Runs `psyb0t/docker-claudebox@v2.8.1` with `regen-context` mounted read-only and uploads its output directory as `regen-description`. The action mounts the runner's Docker socket. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt`, `bump-reason.txt` and `verdict.txt`. |
 | `release` | `contents: write` | Applies the patch to the commit `regen` started from, validates Claude's files, computes the version, prepends the changelog entry, bumps `version_files`, commits as `github-actions[bot]`, creates an annotated tag (`vX.Y.Z`, blank line, the entry), and pushes branch and tag with one `git push --atomic`. |
 | `github-release` | `contents: write` | [`release-workflow.yml`](#release-workflowyml) with the new `tag`. |
 | `clawhub` | `contents: read` | [`clawhub-publish.yml`](#clawhub-publishyml) with the new `tag`, when `clawhub_publish` is true. |

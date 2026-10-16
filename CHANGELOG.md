@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.52.2 (2026-10-16)
+
+- The claudebox action is pinned to v2.8.1, which trims whitespace from the Claude credentials. A secret saved with a leading space made every claudebox step fail before Claude started.
+
 ## v0.52.1 (2026-10-16)
 
 - `regen-and-update-repo.yml` uploads every fix attempt's context, prompt, notes, diff and check logs as the `regen-fix` artifact, also when the run fails, and adds each attempt's changed files and summary to the job summary.
