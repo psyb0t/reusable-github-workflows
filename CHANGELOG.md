@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.51.0 (2026-10-16)
+
+**Breaking:** `claudebox.yml` is removed. claudebox now ships its own GitHub Action, so callers of `claudebox.yml` switch to a job step with `uses: psyb0t/docker-claudebox@v2.6.0`. Download the context artifact, pass `context-path`, `prompt-file` or `prompt`, `output-path` and the Claude credential as inputs, and upload the output directory yourself. Set `timeout-minutes` on the job.
+
+- `regen-and-update-repo.yml`'s `describe` job runs the `psyb0t/docker-claudebox@v2.6.0` action directly. It downloads `regen-context` and `regen-prompt`, sends the same prompt and uploads `regen-description` as before. The job still has `contents: read` and receives only `ANTHROPIC_API_KEY` and/or `CLAUDE_CODE_OAUTH_TOKEN`. Its inputs and secrets are unchanged.
+
 ## v0.50.2 (2026-10-16)
 
 - `claudebox.yml` lets Claude run commands and install the tools it needs (apt-get, go install, pip, npm, Docker through the mounted socket) to inspect, build or test a change. The network is for package and image downloads only, and Claude still never sends repository content or credentials anywhere.

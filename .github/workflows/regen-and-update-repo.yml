@@ -1,7 +1,7 @@
 name: Regen And Update Repo Workflow
 
 # Regenerate, describe, release. Runs the repo's own generate command; when the
-# tree changes, runs the repo's checks, asks Claude (through claudebox.yml) to
+# tree changes, runs the repo's checks, asks Claude (through the psyb0t/docker-claudebox action) to
 # describe the change and classify it, then commits, tags and pushes the
 # result and publishes the release.
 #
@@ -154,7 +154,7 @@ on:
         default: "Scheduled regeneration failed"
         type: string
       runs_on:
-        description: "Runner to use (e.g. ubuntu-latest). Must be ephemeral; see claudebox.yml."
+        description: "Runner to use (e.g. ubuntu-latest). Must be ephemeral: the claudebox action mounts the Docker socket."
         required: false
         default: "ubuntu-latest"
         type: string
@@ -321,20 +321,45 @@ jobs:
     name: Describe
     needs: [regen]
     if: needs.regen.outputs.changed == 'true'
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.claude_timeout_minutes }}
     permissions:
       contents: read
-    uses: psyb0t/reusable-github-workflows/.github/workflows/claudebox.yml@master
-    with:
-      context_artifact: regen-context
-      prompt_artifact: regen-prompt
-      prompt_file: prompt.md
-      output_artifact: regen-description
-      model: ${{ inputs.claude_model }}
-      timeout_minutes: ${{ inputs.claude_timeout_minutes }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    steps:
+      - name: Download context
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regen-context
+          path: ${{ runner.temp }}/regen-context
+
+      - name: Download prompt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regen-prompt
+          path: ${{ runner.temp }}/regen-prompt
+
+      # The action mounts the runner's Docker socket into claudebox; this job
+      # holds only the context and the Claude credential.
+      - name: Run claudebox
+        uses: psyb0t/docker-claudebox@945a623936cebdc1f03d327b32835110e97d6167 # v2.6.0
+        with:
+          prompt-file: ${{ runner.temp }}/regen-prompt/prompt.md
+          context-path: ${{ runner.temp }}/regen-context
+          output-path: ${{ runner.temp }}/regen-description
+          model: ${{ inputs.claude_model }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      # Upload even after a failure so a partial output can be inspected;
+      # release validates it and falls back when it is missing or malformed.
+      - name: Upload description
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regen-description
+          path: ${{ runner.temp }}/regen-description
+          if-no-files-found: warn
+          retention-days: 7
 
   # Runs when describe failed too: the deterministic fallback covers it. Only a
   # cancelled describe (or a failed regen) stops the release.

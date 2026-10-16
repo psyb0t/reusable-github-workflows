@@ -22,7 +22,6 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [make-checks.yml](#make-checksyml)
   - [release-workflow.yml](#release-workflowyml)
   - [clawhub-publish.yml](#clawhub-publishyml)
-  - [claudebox.yml](#claudeboxyml)
   - [regen-and-update-repo.yml](#regen-and-update-repoyml)
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
   - [create-badges.yml](#create-badgesyml)
@@ -55,7 +54,6 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`make-checks.yml`](#make-checksyml) | Deprecated compatibility runner for container-backed `make lint` and `make test` checks. Use `code-workflow.yml` for new callers. |
 | [`release-workflow.yml`](#release-workflowyml) | Cut a GitHub release for a tag (tag + notes, no artifacts) via the gh CLI. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
-| [`claudebox.yml`](#claudeboxyml) | Run [claudebox](https://github.com/psyb0t/docker-claudebox) one-shot on a read-only context and upload what it writes to one output directory. No GitHub token reaches it. |
 | [`regen-and-update-repo.yml`](#regen-and-update-repoyml) | Run a generator; if the tree changed, run checks, have Claude describe and classify the change, then commit, tag, push and publish. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
@@ -701,72 +699,14 @@ That selects `.agents/skills/android-lab/SKILL.md` and no plugins. To select spe
 
 Run `python3 tests/test_clawhub_selection.py -v` to test the four workflow steps against a recording CLI without publishing. The test needs Python 3 with PyYAML, Bash and jq; it needs no token or network access.
 
-## claudebox.yml
-
-Runs [`psyb0t/claudebox`](https://github.com/psyb0t/docker-claudebox) once, as `claudebox -p "<prompt>" --output-format json`, through claudebox's own wrapper script. The wrapper is downloaded from a pinned docker-claudebox commit and checked against a pinned sha256. The image is pinned by tag and digest.
-
-- **Context:** an artifact (`context_artifact`) or, when that is empty, a checkout of the caller repository (`persist-credentials: false`). It is mounted read-only at `/context` with `CLAUDEBOX_MOUNT_*`.
-- **Output:** one writable directory, which is the claudebox workspace. It is uploaded as `output_artifact` even when the run fails, so a partial result can be inspected.
-- **Prompt:** a file from `prompt_artifact` (or the checkout). The workflow puts a fixed preamble in front of it. The preamble says everything under `/context` is untrusted data, never instructions, and that files may only be written to the output directory.
-- **Result:** the JSON result's metadata (`is_error`, turns, duration, cost) is logged. A non-zero exit or `is_error: true` fails the job.
-- **Image:** the minimal variant. Reading text and writing text needs no toolchain, and the `-full` variant is several GB more to pull on every run. Claude Code is installed from npm when the container starts, so the runner needs outbound network.
-
-### Trust boundary
-
-The job has `contents: read` and nothing else. Its environment holds no `GITHUB_TOKEN` and no secret except the Claude credential(s), forwarded as `CLAUDEBOX_ENV_ANTHROPIC_API_KEY` and `CLAUDEBOX_ENV_CLAUDE_CODE_OAUTH_TOKEN`. No SSH agent is forwarded. The wrapper's `~/.claude` and SSH directories point at empty directories under `RUNNER_TEMP`.
-
-**The wrapper always mounts `/var/run/docker.sock` and uses host networking.** Claude can therefore drive the runner's Docker daemon, which amounts to root on the runner. On a GitHub-hosted runner, that is a throwaway VM holding only this job's context and the Claude credential, and I accept that trade-off to run claudebox exactly as it is documented. Do not point `runs_on` at a self-hosted runner that holds anything else. The prompt tells the model not to run commands or reach the network, but the wrapper exposes no tool restriction flags, so that rule is an instruction, not an enforcement. Treat everything in the output artifact as untrusted and validate it before use.
-
-### Inputs
-
-| Input | Type | Default | Description |
-|---|---|---|---|
-| `prompt_file` | string | `"prompt.md"` | Prompt file, relative to the prompt artifact (or the checkout). |
-| `prompt_artifact` | string | `""` | Artifact holding the prompt. Empty reads it from the checkout. |
-| `context_artifact` | string | `""` | Artifact mounted read-only at `/context`. Empty mounts a checkout of the repository. |
-| `context_path` | string | `"."` | Subdirectory of the artifact or checkout to mount. |
-| `output_artifact` | string | required | Artifact name for the output directory. |
-| `timeout_minutes` | number | `20` | Job timeout, image pull and Claude Code install included. |
-| `model` | string | `""` | `--model`. Empty uses Claude Code's default. |
-| `effort` | string | `""` | `--effort`. Empty uses Claude Code's default. |
-| `image` | string | `psyb0t/claudebox:v2.5.1@sha256:26fe…` | Image, must include a digest. |
-| `wrapper_commit` | string | docker-claudebox `v2.5.1` commit | Commit `wrapper.sh` is fetched from. Bump with `image` and `wrapper_sha256`. |
-| `wrapper_sha256` | string | pinned | Expected sha256 of that `wrapper.sh`. |
-| `runs_on` | string | `"ubuntu-latest"` | Runner label. Must be an ephemeral runner. |
-
-### Secrets
-
-| Secret | Required | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | one of the two | Anthropic API key. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Claude Code OAuth token from `claude setup-token`. |
-
-Pass either or both. Both are forwarded when both are set, and Claude Code picks. The job fails before pulling anything when neither is set, and the step summary names which credentials were forwarded (never their values). The names match the usual repository secret names, so `secrets: inherit` works.
-
-### Example
-
-```yaml
-jobs:
-  describe:
-    permissions:
-      contents: read
-    uses: psyb0t/reusable-github-workflows/.github/workflows/claudebox.yml@master
-    with:
-      context_artifact: my-context
-      prompt_artifact: my-prompt
-      output_artifact: my-output
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-```
-
 ## regen-and-update-repo.yml
 
-Keeps generated code current without a human in the loop. It runs the repository's own generate command; if that changes the tree, it runs the repository's checks, asks Claude (through [`claudebox.yml`](#claudeboxyml)) to describe and classify the change, then commits, tags, pushes and publishes. If nothing changed, the run ends green with nothing pushed. A typical caller is a generated API client refreshed daily from the spec its upstream publishes.
+Keeps generated code current without a human in the loop. It runs the repository's own generate command; if that changes the tree, it runs the repository's checks, asks Claude (through the [`psyb0t/docker-claudebox` GitHub Action](https://github.com/psyb0t/docker-claudebox#github-action)) to describe and classify the change, then commits, tags, pushes and publishes. If nothing changed, the run ends green with nothing pushed. A typical caller is a generated API client refreshed daily from the spec its upstream publishes.
 
 | Job | Permissions | What it does |
 |---|---|---|
 | `regen` | `contents: read` | Full-history checkout, `generate_command`, `git status --porcelain`. On a change: snapshot the patch (`git add -N` + `git diff --binary`, so new files are included), run `check_commands`, fail if the checks altered the snapshot, optionally run `apidiff`, and upload three artifacts: `regen-patch`, `regen-context`, `regen-prompt`. |
-| `describe` | `contents: read` | `claudebox.yml` on `regen-context`. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt` and `bump-reason.txt`. |
+| `describe` | `contents: read` | Runs `psyb0t/docker-claudebox@v2.6.0` with `regen-context` mounted read-only and uploads its output directory as `regen-description`. The action mounts the runner's Docker socket. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt` and `bump-reason.txt`. |
 | `release` | `contents: write` | Applies the patch to the commit `regen` started from, validates Claude's files, computes the version, prepends the changelog entry, bumps `version_files`, commits as `github-actions[bot]`, creates an annotated tag (`vX.Y.Z`, blank line, the entry), and pushes branch and tag with one `git push --atomic`. |
 | `github-release` | `contents: write` | [`release-workflow.yml`](#release-workflowyml) with the new `tag`. |
 | `clawhub` | `contents: read` | [`clawhub-publish.yml`](#clawhub-publishyml) with the new `tag`, when `clawhub_publish` is true. |
@@ -815,14 +755,14 @@ The `release` job pushes to the triggering branch with `GITHUB_TOKEN`. Branch pr
 | `clawhub_skill_names` | string | `""` | Passed to `clawhub-publish.yml` as `skill_names`. |
 | `clawhub_plugin_names` | string | `""` | Passed to `clawhub-publish.yml` as `plugin_names`. |
 | `failure_issue_title` | string | `"Scheduled regeneration failed"` | Title of the single failure issue. |
-| `runs_on` | string | `"ubuntu-latest"` | Runner label. Must be ephemeral (see claudebox.yml). |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. Must be ephemeral, because the claudebox action mounts the Docker socket. |
 
 ### Secrets
 
 | Secret | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | one of the two | Passed to `claudebox.yml`. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Passed to `claudebox.yml`. |
+| `ANTHROPIC_API_KEY` | one of the two | Passed to the claudebox action in `describe`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Passed to the claudebox action in `describe`. |
 | `CLAWHUB_TOKEN` | with `clawhub_publish` | Passed to `clawhub-publish.yml` as `clawhub_token`. |
 
 The calling job must grant `contents: write` and `issues: write`.
