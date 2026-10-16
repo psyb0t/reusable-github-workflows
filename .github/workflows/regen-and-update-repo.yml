@@ -1,0 +1,478 @@
+name: Regen And Update Repo Workflow
+
+# Regenerate, describe, release. Runs the repo's own generate command; when the
+# tree changes, runs the repo's checks, asks Claude (through claudebox.yml) to
+# describe the change and classify it, then commits, tags and pushes the
+# result and publishes the release.
+#
+# Typical use: a generated API client refreshed on a schedule from a spec its
+# upstream publishes. Nothing here knows about specs or languages; the Go
+# exported-API comparison is an opt-in (`go_apidiff`) that only adds evidence
+# for the description step.
+#
+# SECURITY: generate_command, check_commands and context_command run as shell
+# on the runner, like the *_command inputs of code-workflow.yml. Callers
+# control them; only call this from trusted repos with branch protection on
+# the workflow files.
+#
+# Trust boundary around Claude:
+#   - `describe` runs claudebox with `contents: read` and only the Claude
+#     credential. No GitHub token is passed in. Its input is a context
+#     artifact (diff, stats, changelog head, reports), mounted read-only.
+#   - Claude's output is treated as untrusted text. `release` validates every
+#     file and falls back to a deterministic changelog entry, subject and
+#     `fix` change kind when something is missing or malformed. The version is
+#     computed by the workflow from the last tag; Claude only picks the kind.
+#   - Only `release` can write to the repo, and it executes nothing Claude
+#     wrote.
+#
+# Jobs:
+#   regen          generate, detect changes, run checks, build patch + context
+#   describe       claudebox: changelog.md, subject.txt, change-kind.txt,
+#                  bump-reason.txt
+#   release        apply patch, validate, version, changelog, version files,
+#                  commit, annotated tag, atomic push
+#   github-release / clawhub
+#                  call release-workflow.yml / clawhub-publish.yml with the new
+#                  tag, because a tag pushed with GITHUB_TOKEN does not trigger
+#                  the repo's own tag pipeline
+#   report-failure scheduled runs only: open or update one issue
+#
+# Example caller:
+#
+#   on:
+#     schedule:
+#       - cron: "44 16 * * *"
+#     workflow_dispatch:
+#   jobs:
+#     regen:
+#       permissions:
+#         contents: write
+#         issues: write
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/regen-and-update-repo.yml@master
+#       with:
+#         go_apidiff: true
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      generate_command:
+        description: "Command that regenerates the tracked files (e.g. 'make generate')."
+        required: false
+        default: "make generate"
+        type: string
+      check_commands:
+        description: "Shell run after a change is detected, before anything is pushed (e.g. 'make lint && make test && make sec'). A failure stops the release. '' or '-' skips it."
+        required: false
+        default: "make lint && make test && make sec"
+        type: string
+      context_command:
+        description: "Optional shell whose stdout is given to the description step as context.txt (e.g. a grep for an upstream version line). A failure only warns."
+        required: false
+        default: ""
+        type: string
+      changelog_path:
+        description: "Changelog the new entry is prepended to (above the first '## ' heading)."
+        required: false
+        default: "CHANGELOG.md"
+        type: string
+      version_files:
+        description: "Whitespace-separated JSON files whose top-level \"version\" is set to the new version (e.g. a plugin manifest). Empty bumps none."
+        required: false
+        default: ""
+        type: string
+      allow_major:
+        description: "At 1.0.0 or later, a 'breaking' change kind bumps major. Set false to bump minor instead. No effect before 1.0.0, where breaking always bumps minor."
+        required: false
+        default: true
+        type: boolean
+      go_apidiff:
+        description: "Compare the Go module's exported API between the last tag and the regenerated tree (golang.org/x/exp/cmd/apidiff) and give the report to the description step."
+        required: false
+        default: false
+        type: boolean
+      go_module:
+        description: "Go module path for apidiff. Empty reads it from go.mod."
+        required: false
+        default: ""
+        type: string
+      go_version_file:
+        description: "File setup-go reads the Go version from, for apidiff."
+        required: false
+        default: "go.mod"
+        type: string
+      apidiff_version:
+        description: "EXACT golang.org/x/exp version apidiff is installed from."
+        required: false
+        default: "v0.0.0-20260908205506-85c1c2202aba"
+        type: string
+      max_diff_bytes:
+        description: "Truncate the diff handed to the description step at this size."
+        required: false
+        default: 200000
+        type: number
+      max_changelog_bytes:
+        description: "Reject a generated changelog entry larger than this (fallback is used)."
+        required: false
+        default: 4000
+        type: number
+      claude_model:
+        description: "claudebox --model. Empty uses Claude Code's default."
+        required: false
+        default: ""
+        type: string
+      claude_timeout_minutes:
+        description: "Timeout for the describe job."
+        required: false
+        default: 20
+        type: number
+      github_release:
+        description: "Cut a GitHub release for the new tag (release-workflow.yml)."
+        required: false
+        default: true
+        type: boolean
+      clawhub_publish:
+        description: "Publish to ClawHub for the new tag (clawhub-publish.yml). Needs the CLAWHUB_TOKEN secret."
+        required: false
+        default: false
+        type: boolean
+      clawhub_skill_names:
+        description: "clawhub-publish.yml skill_names. Empty selects all; [] selects none."
+        required: false
+        default: ""
+        type: string
+      clawhub_plugin_names:
+        description: "clawhub-publish.yml plugin_names. Empty selects all; [] selects none."
+        required: false
+        default: ""
+        type: string
+      failure_issue_title:
+        description: "Title of the single issue a failed scheduled run opens or comments on."
+        required: false
+        default: "Scheduled regeneration failed"
+        type: string
+      runs_on:
+        description: "Runner to use (e.g. ubuntu-latest). Must be ephemeral; see claudebox.yml."
+        required: false
+        default: "ubuntu-latest"
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: "Anthropic API key for claudebox. Set this, CLAUDE_CODE_OAUTH_TOKEN, or both."
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: "Claude Code OAuth token for claudebox. Set this, ANTHROPIC_API_KEY, or both."
+        required: false
+      CLAWHUB_TOKEN:
+        description: "ClawHub token, only used when clawhub_publish is true."
+        required: false
+
+# One run per repository at a time, never cancelled: a run that already
+# pushed must finish publishing, and a queued run then starts from the new
+# head instead of racing for the same version.
+concurrency:
+  group: regen-and-update-repo-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  regen:
+    name: Regenerate
+    runs-on: ${{ inputs.runs_on }}
+    if: github.ref_type == 'branch'
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      base_sha: ${{ steps.detect.outputs.base_sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: ${{ runner.temp }}/reusable-workflow-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Generate
+        env:
+          GENERATE_COMMAND: ${{ inputs.generate_command }}
+        run: bash -euo pipefail -c "${GENERATE_COMMAND}"
+
+      # git status --porcelain, not git diff: it also sees NEW untracked files
+      # and still ignores everything in .gitignore (same rule as
+      # code-workflow.yml's drift check).
+      - name: Detect changes
+        id: detect
+        run: |
+          set -euo pipefail
+          echo "base_sha=$(git rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
+          changes="$(git status --porcelain)"
+          if [ -z "${changes}" ]; then
+            echo "changed=false" >>"${GITHUB_OUTPUT}"
+            echo "No changes after generation; nothing to release." >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          echo "changed=true" >>"${GITHUB_OUTPUT}"
+          echo "::group::Changed paths"
+          echo "${changes}"
+          echo "::endgroup::"
+
+      # Snapshot BEFORE the checks, then prove the checks did not touch it.
+      - name: Build patch
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/regen-patch"
+          git add --intent-to-add --all
+          git diff --binary HEAD >"${RUNNER_TEMP}/regen-patch/regen.patch"
+          sha256sum "${RUNNER_TEMP}/regen-patch/regen.patch" | cut -d' ' -f1 >"${RUNNER_TEMP}/regen-patch.sha256"
+
+      - name: Checks
+        if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-'
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+        run: bash -euo pipefail -c "${CHECK_COMMANDS}"
+
+      - name: Verify checks left the tree alone
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git add --intent-to-add --all
+          now="$(git diff --binary HEAD | sha256sum | cut -d' ' -f1)"
+          if [ "${now}" != "$(cat "${RUNNER_TEMP}/regen-patch.sha256")" ]; then
+            echo "::error::The check commands changed tracked or new files. Make them read-only (no --fix, no regeneration)."
+            git status --porcelain
+            exit 1
+          fi
+
+      - name: Set up Go (apidiff)
+        if: steps.detect.outputs.changed == 'true' && inputs.go_apidiff
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: false
+
+      - name: Install apidiff
+        if: steps.detect.outputs.changed == 'true' && inputs.go_apidiff
+        working-directory: ${{ runner.temp }}
+        env:
+          APIDIFF_VERSION: ${{ inputs.apidiff_version }}
+        run: |
+          set -euo pipefail
+          GOBIN="${RUNNER_TEMP}/apidiff-bin" go install "golang.org/x/exp/cmd/apidiff@${APIDIFF_VERSION}"
+
+      - name: Build description context
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          CONTEXT_DIR: ${{ runner.temp }}/regen-context
+          PROMPT_DIR: ${{ runner.temp }}/regen-prompt
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+          CONTEXT_COMMAND: ${{ inputs.context_command }}
+          GO_APIDIFF: ${{ inputs.go_apidiff }}
+          GO_MODULE: ${{ inputs.go_module }}
+          APIDIFF_BIN: ${{ runner.temp }}/apidiff-bin/apidiff
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-context.sh"
+
+      - name: Upload patch
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regen-patch
+          path: ${{ runner.temp }}/regen-patch
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload context
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regen-context
+          path: ${{ runner.temp }}/regen-context
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload prompt
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regen-prompt
+          path: ${{ runner.temp }}/regen-prompt
+          if-no-files-found: error
+          retention-days: 7
+
+  describe:
+    name: Describe
+    needs: [regen]
+    if: needs.regen.outputs.changed == 'true'
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/claudebox.yml@master
+    with:
+      context_artifact: regen-context
+      prompt_artifact: regen-prompt
+      prompt_file: prompt.md
+      output_artifact: regen-description
+      model: ${{ inputs.claude_model }}
+      timeout_minutes: ${{ inputs.claude_timeout_minutes }}
+      runs_on: ${{ inputs.runs_on }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # Runs when describe failed too: the deterministic fallback covers it. Only a
+  # cancelled describe (or a failed regen) stops the release.
+  release:
+    name: Release
+    needs: [regen, describe]
+    if: >-
+      always()
+      && needs.regen.result == 'success'
+      && needs.regen.outputs.changed == 'true'
+      && needs.describe.result != 'cancelled'
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+    steps:
+      # Credentials persist for the push below. Nothing in this job executes
+      # repository code or anything Claude wrote.
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.regen.outputs.base_sha }}
+          fetch-depth: 0
+
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: ${{ runner.temp }}/reusable-workflow-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Download patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regen-patch
+          path: ${{ runner.temp }}/regen-patch
+
+      - name: Download context
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regen-context
+          path: ${{ runner.temp }}/regen-context
+
+      # Missing when describe failed before uploading; the release script
+      # then uses its fallbacks.
+      - name: Download description
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: regen-description
+          path: ${{ runner.temp }}/regen-description
+
+      - name: Prepare commit and tag
+        id: prepare
+        env:
+          PATCH_FILE: ${{ runner.temp }}/regen-patch/regen.patch
+          CLAUDE_OUT_DIR: ${{ runner.temp }}/regen-description
+          CONTEXT_DIR: ${{ runner.temp }}/regen-context
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
+          ALLOW_MAJOR: ${{ inputs.allow_major }}
+          MAX_CHANGELOG_BYTES: ${{ inputs.max_changelog_bytes }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${CLAUDE_OUT_DIR}"
+          bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-release.sh"
+
+      # Atomic: the branch and the tag land together or not at all. A branch
+      # that moved since regen fails the push (no force), and the next run
+      # regenerates from the new head.
+      - name: Push
+        env:
+          BRANCH: ${{ github.ref_name }}
+          TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git push --atomic origin "HEAD:refs/heads/${BRANCH}" "refs/tags/${TAG}"
+          echo "Pushed ${BRANCH} and ${TAG}." >>"${GITHUB_STEP_SUMMARY}"
+
+  github-release:
+    name: GitHub release
+    needs: [release]
+    if: inputs.github_release && needs.release.outputs.tag != ''
+    permissions:
+      contents: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/release-workflow.yml@master
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      runs_on: ${{ inputs.runs_on }}
+
+  clawhub:
+    name: ClawHub
+    needs: [release]
+    if: inputs.clawhub_publish && needs.release.outputs.tag != ''
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/clawhub-publish.yml@master
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      skill_names: ${{ inputs.clawhub_skill_names }}
+      plugin_names: ${{ inputs.clawhub_plugin_names }}
+      runs_on: ${{ inputs.runs_on }}
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
+
+  report-failure:
+    name: Report failure
+    needs: [regen, describe, release]
+    if: >-
+      always()
+      && github.event_name == 'schedule'
+      && (needs.regen.result == 'failure' || needs.release.result == 'failure')
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REGEN_RESULT: ${{ needs.regen.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          TITLE: ${{ inputs.failure_issue_title }}
+        run: |
+          set -euo pipefail
+
+          number="$(gh issue list --state open --search "in:title \"${TITLE}\"" --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
+
+          body="The scheduled regeneration failed in this run: ${RUN_URL}
+
+          Job results: regen=${REGEN_RESULT}, release=${RELEASE_RESULT}.
+
+          Nothing was pushed by the failed job. I need to read the run log, fix the cause, and close this issue once a scheduled run passes again."
+
+          if [ -n "${number}" ]; then
+            gh issue comment "${number}" --body "${body}"
+            echo "Commented on issue #${number}." >>"${GITHUB_STEP_SUMMARY}"
+          else
+            gh issue create --title "${TITLE}" --body "${body}"
+            echo "Opened a failure issue." >>"${GITHUB_STEP_SUMMARY}"
+          fi

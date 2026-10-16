@@ -4,6 +4,14 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.50.0 (2026-10-16)
+
+Two new workflows keep generated code current: one runs a generator and releases the result, the other runs claudebox to describe it.
+
+- `claudebox.yml` runs `psyb0t/claudebox` one-shot through its pinned, checksum-verified wrapper. The image is pinned by digest. A context artifact or checkout is mounted read-only at `/context`, and one output directory is uploaded as an artifact. The job has `contents: read` and receives only `ANTHROPIC_API_KEY` and/or `CLAUDE_CODE_OAUTH_TOKEN`. The wrapper mounts the runner's Docker socket, so use it only on ephemeral runners.
+- `regen-and-update-repo.yml` runs `generate_command`. When the tree changes, it runs `check_commands`, asks claudebox for a changelog entry, a commit subject and a change kind (`fix`, `feature`, `breaking`), validates all of it with deterministic fallbacks, then commits, tags, pushes atomically and calls the release and ClawHub workflows with the new tag. The version comes from the last tag. Before 1.0.0, `breaking` bumps minor and anything else bumps patch. `go_apidiff: true` adds a Go exported-API report to Claude's context. A failed scheduled run opens or updates one issue.
+- `release-workflow.yml` and `clawhub-publish.yml` accept an optional `tag` input, because a tag pushed with `GITHUB_TOKEN` starts no tag-triggered run. Without it, both behave as before.
+
 ## v0.49.1 (2026-10-13)
 
 - Grype logs successful scans as `outcome=completed` rather than `outcome=clean`. Report-only scans still succeed with findings and retain their SARIF output for GitHub Security. Threshold and scanner-failure behavior is unchanged.

@@ -21,6 +21,11 @@ on:
         required: false
         default: "(alpha|beta|rc)"
         type: string
+      tag:
+        description: "Tag to release. Empty uses the triggering tag ref (github.ref). Set it when the caller created the tag itself, because a tag pushed with GITHUB_TOKEN does not start a new tag-triggered run."
+        required: false
+        default: ""
+        type: string
       runs_on:
         description: "Runner to use (e.g. ubuntu-latest, self-hosted)."
         required: false
@@ -49,6 +54,7 @@ jobs:
         run: |
           echo "github.ref: ${{ github.ref }}"
           echo "github.ref_name: ${{ github.ref_name }}"
+          echo "tag: ${{ inputs.tag }}"
           echo "github.sha: ${{ github.sha }}"
           echo "changelog_file: ${{ inputs.changelog_file }}"
           echo "prerelease_match: ${{ inputs.prerelease_match }}"
@@ -56,19 +62,21 @@ jobs:
   release:
     name: GitHub Release
     runs-on: ${{ inputs.runs_on }}
-    if: startsWith(github.ref, 'refs/tags/')
+    if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          # Empty keeps checkout's default (the triggering ref).
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
           CHANGELOG_FILE: ${{ inputs.changelog_file }}
           PRERELEASE_MATCH: ${{ inputs.prerelease_match }}
         run: |

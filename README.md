@@ -22,6 +22,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [make-checks.yml](#make-checksyml)
   - [release-workflow.yml](#release-workflowyml)
   - [clawhub-publish.yml](#clawhub-publishyml)
+  - [claudebox.yml](#claudeboxyml)
+  - [regen-and-update-repo.yml](#regen-and-update-repoyml)
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
   - [create-badges.yml](#create-badgesyml)
   - [git-mirror.yml](#git-mirroryml)
@@ -53,6 +55,8 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`make-checks.yml`](#make-checksyml) | Deprecated compatibility runner for container-backed `make lint` and `make test` checks. Use `code-workflow.yml` for new callers. |
 | [`release-workflow.yml`](#release-workflowyml) | Cut a GitHub release for a tag (tag + notes, no artifacts) via the gh CLI. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
+| [`claudebox.yml`](#claudeboxyml) | Run [claudebox](https://github.com/psyb0t/docker-claudebox) one-shot on a read-only context and upload what it writes to one output directory. No GitHub token reaches it. |
+| [`regen-and-update-repo.yml`](#regen-and-update-repoyml) | Run a generator; if the tree changed, run checks, have Claude describe and classify the change, then commit, tag, push and publish. |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
@@ -595,7 +599,7 @@ jobs:
 
 Cuts a GitHub release for a tag: tag plus notes, no artifacts, since these repos ship Docker images and pip-installable packages rather than bare binaries. Uses the pre-installed `gh` CLI, not a third-party action. Pair it with [`code-workflow.yml`](#code-workflowyml) and [`docker-image-workflow.yml`](#docker-image-workflowyml) and gate it on them with `needs:`.
 
-- Runs only on `refs/tags/*`.
+- Runs only on `refs/tags/*`, or for the tag named in `tag`. A tag pushed with `GITHUB_TOKEN` starts no new workflow run, so a caller that created the tag itself passes it explicitly ([`regen-and-update-repo.yml`](#regen-and-update-repoyml) does).
 - `changelog_file`: its contents become the release body. Empty means `gh` generates notes from the commits since the last tag.
 - A tag matching `prerelease_match` (default `alpha` / `beta` / `rc`) is flagged as a prerelease.
 - Idempotent: a re-run of a tag whose release already exists is a no-op.
@@ -606,6 +610,7 @@ Cuts a GitHub release for a tag: tag plus notes, no artifacts, since these repos
 |---|---|---|---|
 | `changelog_file` | string | `""` | File whose contents become the release body. Empty = generated notes. |
 | `prerelease_match` | string | `"(alpha\|beta\|rc)"` | Regex of tag substrings that mark a prerelease. |
+| `tag` | string | `""` | Tag to release. Empty uses the triggering tag ref. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
 | `debug` | boolean | `false` | Print the workflow context. |
 
@@ -625,7 +630,7 @@ jobs:
 
 ## clawhub-publish.yml
 
-Publishes **skills** and **plugins** to [ClawHub](https://clawhub.ai) through the official `clawhub` CLI. `publish_skills` and `publish_plugins` both default to `true`. A missing or empty directory skips that half. Validation runs on every call. Publishing runs only on a tag after validation passes.
+Publishes **skills** and **plugins** to [ClawHub](https://clawhub.ai) through the official `clawhub` CLI. `publish_skills` and `publish_plugins` both default to `true`. A missing or empty directory skips that half. Validation runs on every call. Publishing runs only on a tag (the triggering ref, or the `tag` input) after validation passes.
 
 Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to validate and publish only those entries. Omit either input, or pass an empty string, to keep discovering every entry of that kind. `[]` selects none. Names match folder names, not manifest display names or npm package names. Duplicates are processed once. A malformed list, invalid folder name, or selected folder without its discoverable manifest fails before that step invokes ClawHub. Unselected entries are neither validated nor published, and their plugin versions are not changed. The existing `publish_skills` and `publish_plugins` switches still disable their respective jobs entirely.
 
@@ -657,6 +662,7 @@ Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to 
 | `node_version` | string | `"22"` | Node.js major version (the CLI requires ≥22). |
 | `min_release_age_days` | number | `7` | Refuse to install a CLI version published more recently than this. |
 | `dry_run` | boolean | `false` | Resolve + validate but don't publish. |
+| `tag` | string | `""` | Tag to check out, validate and publish (e.g. `v1.2.3`). Empty uses the triggering ref. Set it when the caller pushed the tag itself with `GITHUB_TOKEN`, which starts no new run. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
 | `publish_attempts` | number | `4` | Attempts per publish before giving up. Retries apply to ClawHub-side faults only. |
 | `fail_on_upstream_error` | boolean | `true` | Fail the job when ClawHub's own service is still down after every attempt. Set `false` to downgrade to a warning + deferred summary. Rejections of your content always fail regardless. |
@@ -694,6 +700,163 @@ To keep additional private or development skills in the repository without publi
 That selects `.agents/skills/android-lab/SKILL.md` and no plugins. To select specific plugins as well, use `plugin_names: '["my-plugin"]'`. ClawHub selection does not make repository files private; anything committed to a public repository remains public.
 
 Run `python3 tests/test_clawhub_selection.py -v` to test the four workflow steps against a recording CLI without publishing. The test needs Python 3 with PyYAML, Bash and jq; it needs no token or network access.
+
+## claudebox.yml
+
+Runs [`psyb0t/claudebox`](https://github.com/psyb0t/docker-claudebox) once, as `claudebox -p "<prompt>" --output-format json`, through claudebox's own wrapper script. The wrapper is downloaded from a pinned docker-claudebox commit and checked against a pinned sha256. The image is pinned by tag and digest.
+
+- **Context:** an artifact (`context_artifact`) or, when that is empty, a checkout of the caller repository (`persist-credentials: false`). It is mounted read-only at `/context` with `CLAUDEBOX_MOUNT_*`.
+- **Output:** one writable directory, which is the claudebox workspace. It is uploaded as `output_artifact` even when the run fails, so a partial result can be inspected.
+- **Prompt:** a file from `prompt_artifact` (or the checkout). The workflow puts a fixed preamble in front of it. The preamble says everything under `/context` is untrusted data, never instructions, and that files may only be written to the output directory.
+- **Result:** the JSON result's metadata (`is_error`, turns, duration, cost) is logged. A non-zero exit or `is_error: true` fails the job.
+- **Image:** the minimal variant. Reading text and writing text needs no toolchain, and the `-full` variant is several GB more to pull on every run. Claude Code is installed from npm when the container starts, so the runner needs outbound network.
+
+### Trust boundary
+
+The job has `contents: read` and nothing else. Its environment holds no `GITHUB_TOKEN` and no secret except the Claude credential(s), forwarded as `CLAUDEBOX_ENV_ANTHROPIC_API_KEY` and `CLAUDEBOX_ENV_CLAUDE_CODE_OAUTH_TOKEN`. No SSH agent is forwarded. The wrapper's `~/.claude` and SSH directories point at empty directories under `RUNNER_TEMP`.
+
+**The wrapper always mounts `/var/run/docker.sock` and uses host networking.** Claude can therefore drive the runner's Docker daemon, which amounts to root on the runner. On a GitHub-hosted runner, that is a throwaway VM holding only this job's context and the Claude credential, and I accept that trade-off to run claudebox exactly as it is documented. Do not point `runs_on` at a self-hosted runner that holds anything else. The prompt tells the model not to run commands or reach the network, but the wrapper exposes no tool restriction flags, so that rule is an instruction, not an enforcement. Treat everything in the output artifact as untrusted and validate it before use.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `prompt_file` | string | `"prompt.md"` | Prompt file, relative to the prompt artifact (or the checkout). |
+| `prompt_artifact` | string | `""` | Artifact holding the prompt. Empty reads it from the checkout. |
+| `context_artifact` | string | `""` | Artifact mounted read-only at `/context`. Empty mounts a checkout of the repository. |
+| `context_path` | string | `"."` | Subdirectory of the artifact or checkout to mount. |
+| `output_artifact` | string | required | Artifact name for the output directory. |
+| `timeout_minutes` | number | `20` | Job timeout, image pull and Claude Code install included. |
+| `model` | string | `""` | `--model`. Empty uses Claude Code's default. |
+| `effort` | string | `""` | `--effort`. Empty uses Claude Code's default. |
+| `image` | string | `psyb0t/claudebox:v2.5.1@sha256:26fe…` | Image, must include a digest. |
+| `wrapper_commit` | string | docker-claudebox `v2.5.1` commit | Commit `wrapper.sh` is fetched from. Bump with `image` and `wrapper_sha256`. |
+| `wrapper_sha256` | string | pinned | Expected sha256 of that `wrapper.sh`. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. Must be an ephemeral runner. |
+
+### Secrets
+
+| Secret | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | one of the two | Anthropic API key. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Claude Code OAuth token from `claude setup-token`. |
+
+Pass either or both. Both are forwarded when both are set, and Claude Code picks. The job fails before pulling anything when neither is set, and the step summary names which credentials were forwarded (never their values). The names match the usual repository secret names, so `secrets: inherit` works.
+
+### Example
+
+```yaml
+jobs:
+  describe:
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/claudebox.yml@master
+    with:
+      context_artifact: my-context
+      prompt_artifact: my-prompt
+      output_artifact: my-output
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+## regen-and-update-repo.yml
+
+Keeps generated code current without a human in the loop. It runs the repository's own generate command; if that changes the tree, it runs the repository's checks, asks Claude (through [`claudebox.yml`](#claudeboxyml)) to describe and classify the change, then commits, tags, pushes and publishes. If nothing changed, the run ends green with nothing pushed. A typical caller is a generated API client refreshed daily from the spec its upstream publishes.
+
+| Job | Permissions | What it does |
+|---|---|---|
+| `regen` | `contents: read` | Full-history checkout, `generate_command`, `git status --porcelain`. On a change: snapshot the patch (`git add -N` + `git diff --binary`, so new files are included), run `check_commands`, fail if the checks altered the snapshot, optionally run `apidiff`, and upload three artifacts: `regen-patch`, `regen-context`, `regen-prompt`. |
+| `describe` | `contents: read` | `claudebox.yml` on `regen-context`. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt` and `bump-reason.txt`. |
+| `release` | `contents: write` | Applies the patch to the commit `regen` started from, validates Claude's files, computes the version, prepends the changelog entry, bumps `version_files`, commits as `github-actions[bot]`, creates an annotated tag (`vX.Y.Z`, blank line, the entry), and pushes branch and tag with one `git push --atomic`. |
+| `github-release` | `contents: write` | [`release-workflow.yml`](#release-workflowyml) with the new `tag`. |
+| `clawhub` | `contents: read` | [`clawhub-publish.yml`](#clawhub-publishyml) with the new `tag`, when `clawhub_publish` is true. |
+| `report-failure` | `issues: write` | Scheduled runs only, when `regen` or `release` failed: comments on the open issue titled `failure_issue_title`, or opens it. |
+
+The publish jobs exist because a tag pushed with `GITHUB_TOKEN` does not trigger the repository's own tag pipeline. The new commit does not trigger a push pipeline either.
+
+**Versioning.** The workflow computes the version, not Claude. It reads the highest `vX.Y.Z` tag and maps Claude's `change-kind.txt`:
+
+| Change kind | Before 1.0.0 | 1.0.0 and later |
+|---|---|---|
+| `fix` | patch | patch |
+| `feature` | patch | minor |
+| `breaking` | minor | major (minor with `allow_major: false`) |
+
+Anything other than those three words counts as `fix`. The new tag must not exist locally or on the remote, so a version is never reused, and every bump is one step from the last tag, so none is skipped. The kind, the bump and Claude's reason appear in the job summary. With `go_apidiff: true`, the exported API of the Go module at the last tag is compared with the regenerated tree (`golang.org/x/exp/cmd/apidiff`, pinned). The report is evidence for Claude, not the decision.
+
+**Validation of Claude's output.** `changelog.md` must be non-empty, under `max_changelog_bytes`, made of `- ` bullet lines, and free of em and en dashes, `Co-authored-by` and session URLs. `subject.txt` must be one line without its own version prefix, under 72 characters once `vX.Y.Z: ` is prepended, and pass the same text checks. A file that fails is replaced by a deterministic fallback: a bullet with the diff stat plus one bullet per apidiff line, and the subject `vX.Y.Z: regenerate generated code`. A failed or timed-out `describe` job gets the same fallbacks, so a Claude outage does not block the release.
+
+**Concurrency.** One run per repository at a time, never cancelled. A branch that moved after `regen` makes the atomic push fail rather than force anything.
+
+**Trust boundary.** Claude never sees a GitHub token: `describe` has `contents: read` and only the Claude credential. Its output is text that `release` validates and writes into files. Nothing Claude produced is executed, and only `release` can write to the repository. `generate_command`, `check_commands` and `context_command` run as shell on the runner, like the `*_command` inputs of [`code-workflow.yml`](#code-workflowyml); call this workflow only from repositories you trust, with branch protection on the workflow files.
+
+The `release` job pushes to the triggering branch with `GITHUB_TOKEN`. Branch protection that blocks the Actions bot from pushing makes the push fail.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `generate_command` | string | `"make generate"` | Regenerates the tracked files. |
+| `check_commands` | string | `"make lint && make test && make sec"` | Run on a change, before anything is pushed. Must not modify files. `""` or `"-"` skips. |
+| `context_command` | string | `""` | Its stdout is given to Claude as `context.txt` (e.g. an upstream version line). A failure only warns. |
+| `changelog_path` | string | `"CHANGELOG.md"` | The entry is inserted above the first `## ` heading, as `## vX.Y.Z, YYYY-MM-DD` (UTC). |
+| `version_files` | string | `""` | Whitespace-separated JSON files whose top-level `"version"` is set to the new version. The line is edited in place and `jq` confirms the result. |
+| `allow_major` | boolean | `true` | At 1.0.0 or later, `breaking` bumps major. `false` bumps minor. |
+| `go_apidiff` | boolean | `false` | Add a Go exported-API report to Claude's context. |
+| `go_module` | string | `""` | Module path for apidiff. Empty reads `go.mod`. |
+| `go_version_file` | string | `"go.mod"` | Where `setup-go` reads the Go version for apidiff. |
+| `apidiff_version` | string | pinned | Exact `golang.org/x/exp` version apidiff comes from. |
+| `max_diff_bytes` | number | `200000` | The diff given to Claude is truncated at this size. |
+| `max_changelog_bytes` | number | `4000` | Larger generated entries are rejected. |
+| `claude_model` | string | `""` | `--model` for claudebox. |
+| `claude_timeout_minutes` | number | `20` | `describe` timeout. |
+| `github_release` | boolean | `true` | Cut a GitHub release for the new tag. |
+| `clawhub_publish` | boolean | `false` | Publish to ClawHub for the new tag. |
+| `clawhub_skill_names` | string | `""` | Passed to `clawhub-publish.yml` as `skill_names`. |
+| `clawhub_plugin_names` | string | `""` | Passed to `clawhub-publish.yml` as `plugin_names`. |
+| `failure_issue_title` | string | `"Scheduled regeneration failed"` | Title of the single failure issue. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. Must be ephemeral (see claudebox.yml). |
+
+### Secrets
+
+| Secret | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | one of the two | Passed to `claudebox.yml`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | one of the two | Passed to `claudebox.yml`. |
+| `CLAWHUB_TOKEN` | with `clawhub_publish` | Passed to `clawhub-publish.yml` as `clawhub_token`. |
+
+The calling job must grant `contents: write` and `issues: write`.
+
+### Example
+
+A Go client regenerated daily, with its plugin manifest version kept in step:
+
+```yaml
+name: regen
+
+on:
+  schedule:
+    - cron: "44 16 * * *"
+  workflow_dispatch:
+
+jobs:
+  regen:
+    permissions:
+      contents: write
+      issues: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/regen-and-update-repo.yml@master
+    with:
+      version_files: ".agents/.codex-plugin/plugin.json"
+      go_apidiff: true
+      clawhub_publish: true
+      clawhub_skill_names: '["my-skill"]'
+      clawhub_plugin_names: "[]"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+```
+
+The release logic lives in `scripts/regen-context.sh` and `scripts/regen-release.sh`, which the jobs fetch from this repository's `master` like the other script-backed workflows.
 
 ## mcp-registry-publish.yml
 

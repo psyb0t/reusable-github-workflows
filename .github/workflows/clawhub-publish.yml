@@ -21,7 +21,9 @@ name: ClawHub Publish Workflow
 # workflow is CALLED (dry-run for skills, static Plugin Inspector for plugins —
 # no plugin code executes), and the matching `publish-*` job runs only on a tag
 # ref AND only after its validation passed. So dropping a caller's `if: tags`
-# gate gives validation on every push while publishing stays tag-only.
+# gate gives validation on every push while publishing stays tag-only. A
+# caller that pushed the tag itself (with GITHUB_TOKEN, which starts no new
+# run) passes it as `tag`; checkouts and version mirroring then use that tag.
 #
 # Repo access is READ-ONLY (`contents: read`). Publishing authenticates purely
 # with the ClawHub token, never a repo-write scope.
@@ -142,6 +144,12 @@ on:
         type: boolean
         default: false
 
+      tag:
+        description: "Tag to validate and publish (e.g. v1.2.3). Empty uses the triggering ref (github.ref). Set it when the caller created the tag itself, because a tag pushed with GITHUB_TOKEN does not start a new tag-triggered run."
+        required: false
+        type: string
+        default: ""
+
       runs_on:
         description: "Runner to use (e.g. ubuntu-latest, self-hosted)"
         required: false
@@ -184,6 +192,9 @@ jobs:
     steps:
       - name: Checkout code (read-only)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Empty keeps checkout's default (the triggering ref).
+          ref: ${{ inputs.tag }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -220,7 +231,7 @@ jobs:
           SITE: ${{ inputs.site }}
           OWNER: ${{ inputs.owner }}
           SOURCE_REPO: ${{ github.repository }}
-          SOURCE_REF: ${{ github.ref }}
+          SOURCE_REF: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -305,7 +316,7 @@ jobs:
           echo "All ${#skill_dirs[@]} skill(s) valid."
 
   publish-skills:
-    if: ${{ inputs.publish_skills && startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ inputs.publish_skills && (inputs.tag != '' || startsWith(github.ref, 'refs/tags/')) }}
     needs: [validate-skills]
     runs-on: ${{ inputs.runs_on }}
     permissions:
@@ -313,6 +324,9 @@ jobs:
     steps:
       - name: Checkout code (read-only)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Empty keeps checkout's default (the triggering ref).
+          ref: ${{ inputs.tag }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -365,7 +379,7 @@ jobs:
           PUBLISH_ATTEMPTS: ${{ inputs.publish_attempts }}
           FAIL_ON_UPSTREAM_ERROR: ${{ inputs.fail_on_upstream_error }}
           SOURCE_REPO: ${{ github.repository }}
-          SOURCE_REF: ${{ github.ref }}
+          SOURCE_REF: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -573,6 +587,9 @@ jobs:
     steps:
       - name: Checkout code (read-only)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Empty keeps checkout's default (the triggering ref).
+          ref: ${{ inputs.tag }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -669,7 +686,7 @@ jobs:
           echo "All ${#plugin_dirs[@]} plugin(s) valid."
 
   publish-plugins:
-    if: ${{ inputs.publish_plugins && startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ inputs.publish_plugins && (inputs.tag != '' || startsWith(github.ref, 'refs/tags/')) }}
     needs: [validate-plugins]
     runs-on: ${{ inputs.runs_on }}
     permissions:
@@ -677,6 +694,9 @@ jobs:
     steps:
       - name: Checkout code (read-only)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Empty keeps checkout's default (the triggering ref).
+          ref: ${{ inputs.tag }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -716,7 +736,7 @@ jobs:
           PUBLISH_ATTEMPTS: ${{ inputs.publish_attempts }}
           FAIL_ON_UPSTREAM_ERROR: ${{ inputs.fail_on_upstream_error }}
           SOURCE_REPO: ${{ github.repository }}
-          SOURCE_REF: ${{ github.ref }}
+          SOURCE_REF: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
