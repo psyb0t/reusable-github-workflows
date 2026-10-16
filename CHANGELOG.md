@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.52.1 (2026-10-16)
+
+- `regen-and-update-repo.yml` uploads every fix attempt's context, prompt, notes, diff and check logs as the `regen-fix` artifact, also when the run fails, and adds each attempt's changed files and summary to the job summary.
+- The claudebox action is pinned to v2.8.0, which prints Claude's messages, tool calls and tool results to the job log while it runs.
+
 ## v0.52.0 (2026-10-16)
 
 - `regen-and-update-repo.yml` fixes failing checks. When `check_commands` fail after regeneration, Claude edits the checkout through the claudebox action and the checks run again, up to `fix_attempts` times (default 3, `0` turns it off). Each attempt gets the latest check output, the diff so far, every earlier check log, each earlier attempt's summary and diff, and writing rules. The prompt makes Claude follow the repository's `AGENTS.md` and `.agents/rules/`, use its Make targets and fix causes at their source.

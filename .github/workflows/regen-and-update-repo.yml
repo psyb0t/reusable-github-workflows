@@ -302,7 +302,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check0.outputs.passed == 'false' && inputs.fix_attempts >= 1
         continue-on-error: true
         timeout-minutes: ${{ inputs.fix_timeout_minutes }}
-        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        uses: psyb0t/docker-claudebox@2e4fd4245557ff17ae6d93a2a9cb69f4662c0abb # v2.8.0
         with:
           prompt-file: ${{ runner.temp }}/regen-fix/attempt-1/prompt.md
           context-path: ${{ runner.temp }}/regen-fix/attempt-1/context
@@ -347,7 +347,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check1.outputs.passed == 'false' && inputs.fix_attempts >= 2
         continue-on-error: true
         timeout-minutes: ${{ inputs.fix_timeout_minutes }}
-        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        uses: psyb0t/docker-claudebox@2e4fd4245557ff17ae6d93a2a9cb69f4662c0abb # v2.8.0
         with:
           prompt-file: ${{ runner.temp }}/regen-fix/attempt-2/prompt.md
           context-path: ${{ runner.temp }}/regen-fix/attempt-2/context
@@ -392,7 +392,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check2.outputs.passed == 'false' && inputs.fix_attempts >= 3
         continue-on-error: true
         timeout-minutes: ${{ inputs.fix_timeout_minutes }}
-        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        uses: psyb0t/docker-claudebox@2e4fd4245557ff17ae6d93a2a9cb69f4662c0abb # v2.8.0
         with:
           prompt-file: ${{ runner.temp }}/regen-fix/attempt-3/prompt.md
           context-path: ${{ runner.temp }}/regen-fix/attempt-3/context
@@ -424,6 +424,17 @@ jobs:
         run: |
           echo "::error::The checks still fail after ${{ inputs.fix_attempts }} fix attempt(s). Logs: the Checks steps above."
           exit 1
+
+      # Every attempt's context, prompt, notes, diff and check logs, for
+      # inspecting what Claude saw and did. Uploaded on failure too.
+      - name: Upload fix attempts
+        if: always() && steps.detect.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regen-fix
+          path: ${{ runner.temp }}/regen-fix
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Built from the checked tree, so it carries the regeneration and every
       # fix that made the checks pass.
@@ -517,7 +528,7 @@ jobs:
       # The action mounts the runner's Docker socket into claudebox; this job
       # holds only the context and the Claude credential.
       - name: Run claudebox
-        uses: psyb0t/docker-claudebox@0e4374ad0ba42d8d7c622bb1a5c40ed6dd1a6b2d # v2.7.0
+        uses: psyb0t/docker-claudebox@2e4fd4245557ff17ae6d93a2a9cb69f4662c0abb # v2.8.0
         with:
           prompt-file: ${{ runner.temp }}/regen-prompt/prompt.md
           context-path: ${{ runner.temp }}/regen-context

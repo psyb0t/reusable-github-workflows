@@ -183,6 +183,19 @@ say what blocks it.
 EOF
 }
 
+# Notes and changed files of this attempt in the job summary. The notes are
+# model output, so they go in a fenced block and never render as Markdown.
+summarize() {
+	local changed=$1
+	[[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+	# shellcheck disable=SC2016 # literal backticks for Markdown
+	{
+		printf '### Fix attempt %s\n\nChanged files:\n\n```\n%s\n```\n\nClaude'"'"'s summary:\n\n```\n' "${ATTEMPT}" "${changed}"
+		sed 's/```/` ` `/g' "${FIX_DIR}/notes-${ATTEMPT}.md"
+		printf '```\n\n'
+	} >>"${GITHUB_STEP_SUMMARY}"
+}
+
 guard() {
 	local dir pre post changed bad added notes file line
 	require_env ATTEMPT
@@ -205,6 +218,7 @@ guard() {
 		log WARN "fix attempt changed nothing attempt=${ATTEMPT}"
 		echo "::warning::Fix attempt ${ATTEMPT} changed nothing"
 		: >"${FIX_DIR}/fix-${ATTEMPT}.patch"
+		summarize "(none)"
 		return 0
 	fi
 
@@ -245,6 +259,8 @@ guard() {
 		printf '%s\n' "${added}" | head -n 5
 		exit 1
 	fi
+
+	summarize "${changed}"
 
 	log INFO "fix attempt passed the guard attempt=${ATTEMPT} files=$(wc -l <<<"${changed}")"
 }
