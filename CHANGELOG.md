@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.50.2 (2026-10-16)
+
+- `claudebox.yml` lets Claude run commands and install the tools it needs (apt-get, go install, pip, npm, Docker through the mounted socket) to inspect, build or test a change. The network is for package and image downloads only, and Claude still never sends repository content or credentials anywhere.
+
 ## v0.50.1 (2026-10-16)
 
 - `regen-and-update-repo.yml` checks out its helper scripts inside the workspace and then moves them to the runner's temp directory. `actions/checkout` refuses paths outside the workspace, so every run failed at that step.
