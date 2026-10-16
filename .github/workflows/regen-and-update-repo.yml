@@ -200,9 +200,14 @@ jobs:
         with:
           repository: psyb0t/reusable-github-workflows
           ref: master
-          path: ${{ runner.temp }}/reusable-workflow-tools
+          path: .reusable-workflow-tools
           sparse-checkout: scripts
           persist-credentials: false
+
+      # actions/checkout only writes inside the workspace; move the tools out
+      # so they never show up in the repository's git status.
+      - name: Move reusable workflow tools out of the workspace
+        run: mv .reusable-workflow-tools "${RUNNER_TEMP}/reusable-workflow-tools"
 
       - name: Generate
         env:
@@ -360,9 +365,14 @@ jobs:
         with:
           repository: psyb0t/reusable-github-workflows
           ref: master
-          path: ${{ runner.temp }}/reusable-workflow-tools
+          path: .reusable-workflow-tools
           sparse-checkout: scripts
           persist-credentials: false
+
+      # actions/checkout only writes inside the workspace; move the tools out
+      # so they never show up in the repository's git status.
+      - name: Move reusable workflow tools out of the workspace
+        run: mv .reusable-workflow-tools "${RUNNER_TEMP}/reusable-workflow-tools"
 
       - name: Download patch
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
