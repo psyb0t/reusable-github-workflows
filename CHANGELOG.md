@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.3 (2026-10-17)
+
+- Documentation only. The v0.52.0 entry now lists the `fix_timeout_minutes` input (default 30), which shipped in that release but was missing from its notes.
+
 ## v0.53.2 (2026-10-17)
 
 - `regen-and-update-repo.yml` runs the claudebox action from `psyb0t/docker-claudebox@master` instead of a pinned commit, like every other first-party workflow and action here, so claudebox fixes reach regen runs without a release of this repository.
@@ -33,7 +37,7 @@ pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 
 ## v0.52.0 (2026-10-16)
 
-- `regen-and-update-repo.yml` fixes failing checks. When `check_commands` fail after regeneration, Claude edits the checkout through the claudebox action and the checks run again, up to `fix_attempts` times (default 3, `0` turns it off). Each attempt gets the latest check output, the diff so far, every earlier check log, each earlier attempt's summary and diff, and writing rules. The prompt makes Claude follow the repository's `AGENTS.md` and `.agents/rules/`, use its Make targets and fix causes at their source.
+- `regen-and-update-repo.yml` fixes failing checks. When `check_commands` fail after regeneration, Claude edits the checkout through the claudebox action and the checks run again, up to `fix_attempts` times (default 3, `0` turns it off). Each attempt gets the latest check output, the diff so far, every earlier check log, each earlier attempt's summary and diff, and writing rules. The prompt makes Claude follow the repository's `AGENTS.md` and `.agents/rules/`, use its Make targets and fix causes at their source. Each attempt times out after `fix_timeout_minutes` (default 30).
 - A guard fails the run when a fix attempt touches `fix_protected_paths` (workflows, agent rules, gitleaks, golangci and semgrep config, the lint and security scripts, the changelog), adds a check suppression such as `t.Skip`, `nolint` or `nosemgrep`, or adds AI attribution. The patch is built from the tree that passed the checks.
 - `describe` gets the fix notes and diff, the writing rules and the repository rules, and writes `verdict.txt` (`ok` or `block: <reason>`). With `block_on_review: true` (the default) a block stops the release, and so does a missing verdict when the release includes fixes.
 - The fix attempts use the same `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` secret as `describe`. Callers need no changes.
