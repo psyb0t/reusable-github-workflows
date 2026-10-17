@@ -569,10 +569,14 @@ jobs:
       # Credentials persist for the push below: GH_PAT when set, so the push
       # starts the repository's own workflows, GITHUB_TOKEN otherwise. Nothing
       # in this job executes repository code or anything Claude wrote.
+      # The branch tip as of now, not regen's base: a regeneration can take an
+      # hour, and anything pushed meanwhile would otherwise reject the push.
+      # The patch applies onto the new tip below, and the version and changelog
+      # are worked out against it, so a tag pushed meanwhile is respected.
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ needs.regen.outputs.base_sha }}
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || github.token }}
 
@@ -623,14 +627,15 @@ jobs:
           MAX_CHANGELOG_BYTES: ${{ inputs.max_changelog_bytes }}
           BLOCK_ON_REVIEW: ${{ inputs.block_on_review }}
           TAG_ENABLED: ${{ inputs.tag }}
+          BASE_SHA: ${{ needs.regen.outputs.base_sha }}
         run: |
           set -euo pipefail
           mkdir -p "${CLAUDE_OUT_DIR}"
           bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-release.sh"
 
-      # Atomic: the branch and the tag land together or not at all. A branch
-      # that moved since regen fails the push (no force), and the next run
-      # regenerates from the new head.
+      # Atomic: the branch and the tag land together or not at all. Only a push
+      # in the seconds since the checkout above can still reject it (no force);
+      # the next run then regenerates from the new head.
       - name: Push
         env:
           BRANCH: ${{ github.ref_name }}

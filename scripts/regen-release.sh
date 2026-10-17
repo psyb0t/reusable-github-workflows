@@ -316,7 +316,17 @@ main() {
 
 	check_verdict
 
-	git apply --binary --index "${PATCH_FILE}"
+	# The checkout is the branch tip, which may be ahead of the commit regen
+	# started from. --3way resolves the patch against its preimage blobs from
+	# that commit, so unrelated commits pushed meanwhile do not stop it; a real
+	# conflict with them still fails here.
+	if [[ -n "${BASE_SHA:-}" && "$(git rev-parse HEAD)" != "${BASE_SHA}" ]]; then
+		log INFO "branch moved during regeneration base=${BASE_SHA} head=$(git rev-parse HEAD)"
+	fi
+	if ! git apply --binary --index --3way "${PATCH_FILE}"; then
+		log ERROR "regenerated patch conflicts with commits pushed during the run"
+		exit 1
+	fi
 	if git diff --cached --quiet HEAD; then
 		log ERROR "patch applied but produced no changes"
 		exit 1
