@@ -166,7 +166,11 @@ jobs:
     needs: [wait]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
-      contents: read
+      # GitHub checks every called job's permissions when the run starts,
+      # skipped ones included: the built-in release job asks for write even
+      # with create_release: false, and the scan job for security-events.
+      contents: write
+      security-events: write
     uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
     with:
       repository_name: you/yourimage
@@ -977,7 +981,7 @@ It lists only public packages pkg.go.dev has crawled, and the crawl lags publica
 
 The coverage value usually arrives through `go-workflow.yml`'s `coverage_file` input. The badges job writes only SVGs to the `badges` branch, with `[skip ci]` on its commit. Runs targeting the same caller repository and branch are serialized.
 
-**Reading coverage from another run.** Set `coverage_run_id` to pull the coverage artifact from a different workflow run, for example the default-branch run a tag release promotes instead of rebuilding (see [`wait-for-default-branch.yml`](#wait-for-default-branchyml)'s `run_id` output). This needs a separate, opt-in job internal to this workflow that requests `permissions: actions: read` to call the GitHub Actions API across runs; that job only runs when `coverage_run_id` is set, so every caller that leaves it empty is unaffected and needs no new permission. A caller that does set it must grant `actions: read` on its own calling job, or the cross-run download fails.
+**Reading coverage from another run.** Set `coverage_run_id` to pull the coverage artifact from a different workflow run, for example the default-branch run a tag release promotes instead of rebuilding (see [`wait-for-default-branch.yml`](#wait-for-default-branchyml)'s `run_id` output). This uses a separate job internal to this workflow that only runs when `coverage_run_id` is set. It declares no permissions of its own and inherits the calling job's grant, because GitHub checks every job's requested permissions when the run starts, skipped jobs included. A caller that sets `coverage_run_id` must grant `actions: read` on its calling job, or the cross-run download fails; every other caller needs no new permission.
 
 ### Inputs
 

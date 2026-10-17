@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.54.1 (2026-10-17)
+
+- `create-badges.yml` works again for callers that grant only `contents: write`, which is every existing caller. v0.54.0's new `fetch-remote-coverage` job requested `actions: read`, and GitHub checks every job's requested permissions when a run starts, skipped jobs included, so those pipelines failed at startup. The job now declares no permissions and inherits the calling job's grant, which a `coverage_run_id` caller extends with `actions: read`.
+- The README's release-without-rebuilding example grants the promote job `contents: write` and `security-events: write`. The called workflow's release and scan jobs request them, and with only `contents: read` the run would fail at startup the same way.
+
 ## v0.54.0 (2026-10-17)
 
 - New `wait-for-default-branch.yml` lets a tag's pipeline wait for the default branch's push run of the same commit to finish, then hands back its `run_id` so a tag release can reuse what that run built instead of rebuilding or retesting.
