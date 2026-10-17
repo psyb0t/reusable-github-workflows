@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.7 (2026-10-17)
+
+- `regen-and-update-repo.yml` checks the result again on the current branch tip before it releases. After the checks pass, the new `scripts/regen-sync.sh` moves the regenerated tree onto the tip when commits landed during the run. The checks run again there, and when they fail or the move left conflict markers, Claude gets one more fix attempt, told that the branch moved, under the same guard as the fix loop. The run fails if conflict markers remain or the checks still fail. The job's `base_sha` output is the tip the patch was built against.
+
 ## v0.53.6 (2026-10-17)
 
 - `regen-and-update-repo.yml` no longer fails when commits land on the branch while a regeneration runs. The `commit` job checks out the branch tip instead of the commit `regen` started from, applies the patch with `git apply --3way`, and computes the version and changelog against that tip. Only a real conflict with those commits, or a push in the seconds before the final push, still fails the run.

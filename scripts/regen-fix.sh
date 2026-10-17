@@ -150,14 +150,18 @@ prepare() {
 }
 
 write_prompt() {
-	local out=$1 earlier=""
+	local out=$1 earlier="" sync_note=""
 	if ((ATTEMPT > 1)); then
 		earlier=$(<"${PROMPT_TEMPLATE_DIR}/regen-fix-earlier-attempts.md")
+	fi
+	if [[ "${REGEN_SYNC:-false}" == "true" ]]; then
+		sync_note=$(<"${PROMPT_TEMPLATE_DIR}/regen-fix-sync.md")
 	fi
 	render_prompt regen-fix.md \
 		"CHECK_COMMANDS=${CHECK_COMMANDS}" \
 		"ATTEMPT=${ATTEMPT}" \
 		"MAX_ATTEMPTS=${MAX_ATTEMPTS}" \
+		"SYNC_NOTE=${sync_note}" \
 		"EARLIER_ATTEMPTS=${earlier}" \
 		"PROTECTED_PATHS=$(protected_globs | sed 's/^/- /')" >"${out}"
 }

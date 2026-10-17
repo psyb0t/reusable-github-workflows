@@ -203,7 +203,7 @@ jobs:
       contents: read
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
-      base_sha: ${{ steps.detect.outputs.base_sha }}
+      base_sha: ${{ steps.sync.outputs.base_sha || steps.detect.outputs.base_sha }}
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -425,6 +425,100 @@ jobs:
         run: |
           echo "::error::The checks still fail after ${{ inputs.fix_attempts }} fix attempt(s). Logs: the Checks steps above."
           exit 1
+
+      # The branch may have moved while this run regenerated and fixed: a run
+      # can take an hour. Move the checked tree onto the current tip, check it
+      # again, and give Claude one more attempt when the move conflicted or
+      # broke the checks. Only a result that passes on the tip gets released.
+      - name: Sync with the branch tip
+        id: sync
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ github.ref_name }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-sync.sh"
+
+      - name: Checks after sync
+        id: checksync
+        if: steps.detect.outputs.changed == 'true' && steps.sync.outputs.moved == 'true' && inputs.check_commands != '' && inputs.check_commands != '-'
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "4"
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-check.sh"
+
+      - name: Prepare sync fix attempt
+        if: steps.detect.outputs.changed == 'true' && steps.sync.outputs.moved == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && (steps.checksync.outputs.passed == 'false' || steps.sync.outputs.conflict == 'true')
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "5"
+          MAX_ATTEMPTS: "5"
+          REGEN_SYNC: "true"
+          MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+          WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" prepare
+
+      - name: Sync fix attempt
+        id: fixsync
+        if: steps.detect.outputs.changed == 'true' && steps.sync.outputs.moved == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && (steps.checksync.outputs.passed == 'false' || steps.sync.outputs.conflict == 'true')
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.fix_timeout_minutes }}
+        uses: psyb0t/docker-claudebox@master
+        with:
+          prompt-file: ${{ runner.temp }}/regen-fix/attempt-5/prompt.md
+          context-path: ${{ runner.temp }}/regen-fix/attempt-5/context
+          output-path: ${{ github.workspace }}
+          model: ${{ inputs.claude_model }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Guard sync fix attempt
+        if: steps.detect.outputs.changed == 'true' && steps.sync.outputs.moved == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && (steps.checksync.outputs.passed == 'false' || steps.sync.outputs.conflict == 'true')
+        env:
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "5"
+          PROTECTED_PATHS: ${{ inputs.fix_protected_paths }}
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+          VERSION_FILES: ${{ inputs.version_files }}
+          RESULT: ${{ steps.fixsync.outputs.result }}
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-fix.sh" guard
+
+      - name: Checks after sync fix attempt
+        id: checksyncfix
+        if: steps.detect.outputs.changed == 'true' && steps.sync.outputs.moved == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && (steps.checksync.outputs.passed == 'false' || steps.sync.outputs.conflict == 'true')
+        env:
+          CHECK_COMMANDS: ${{ inputs.check_commands }}
+          FIX_DIR: ${{ runner.temp }}/regen-fix
+          ATTEMPT: "5"
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-check.sh"
+
+      # Checks can pass with conflict markers left in a file they never read,
+      # so markers are rejected on their own.
+      - name: Require a clean result on the branch tip
+        if: steps.detect.outputs.changed == 'true' && steps.sync.outputs.moved == 'true'
+        env:
+          CHECKS_ENABLED: ${{ inputs.check_commands != '' && inputs.check_commands != '-' }}
+          CONFLICT: ${{ steps.sync.outputs.conflict }}
+          SYNC_PASSED: ${{ steps.checksync.outputs.passed }}
+          FIX_PASSED: ${{ steps.checksyncfix.outputs.passed }}
+        run: |
+          set -euo pipefail
+          if git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!vendor'; then
+            echo "::error::Conflict markers remain after moving onto the branch tip."
+            exit 1
+          fi
+          if [ "${CHECKS_ENABLED}" = "true" ] && [ "${SYNC_PASSED}" != "true" ] && [ "${FIX_PASSED}" != "true" ]; then
+            echo "::error::The checks fail on the moved branch tip after the sync fix attempt."
+            exit 1
+          fi
+          if [ "${CHECKS_ENABLED}" != "true" ] && [ "${CONFLICT}" = "true" ]; then
+            echo "::error::The patch conflicts with commits pushed during the run, and no checks are configured to drive a fix."
+            exit 1
+          fi
 
       # Every attempt's context, prompt, notes, diff and check logs, for
       # inspecting what Claude saw and did. Uploaded on failure too.

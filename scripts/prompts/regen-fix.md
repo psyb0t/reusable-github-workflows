@@ -2,6 +2,7 @@ An automated job ran this repository's code generator. The repository's checks
 (`{{CHECK_COMMANDS}}`) now fail. Your current working directory is the
 repository checkout with the regenerated changes applied. Fix the repository so
 the checks pass. This is attempt {{ATTEMPT}} of {{MAX_ATTEMPTS}}.
+{{SYNC_NOTE}}
 
 Context files under /context:
 - check-output.log: output of the latest failing check run. Start here.
