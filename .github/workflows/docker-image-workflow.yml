@@ -103,6 +103,24 @@ on:
         type: boolean
         default: true
 
+      push_sha_tag:
+        description: "On a default-branch push, also tag every target <tag_prefix>sha-<github.sha><tag_suffix>, alongside the existing <tag_prefix>latest<tag_suffix>. A later tag release can promote this exact per-commit manifest with promote_on_tag instead of rebuilding it. Off by default."
+        required: false
+        type: boolean
+        default: false
+
+      promote_on_tag:
+        description: "On a tag push, skip the build entirely and re-point the release tag at the sha tag this commit already pushed from the default branch, keeping every platform and digest, with `docker buildx imagetools create` instead of rebuilding. Requires the default-branch run that built this commit to have set push_sha_tag: true; pair with wait-for-default-branch.yml so the tag pipeline waits for that run before this job starts. Off by default: a tag push still builds and pushes exactly as before."
+        required: false
+        type: boolean
+        default: false
+
+      create_release:
+        description: "Create the built-in GitHub Release for a tag push. Set false when a separate release-workflow.yml job owns the release instead (for example for its annotated-tag-notes or changelog_file precedence), so a tag never produces two releases. Default true keeps today's behavior."
+        required: false
+        type: boolean
+        default: true
+
     secrets:
       dockerhub_username:
         description: "Docker Hub username"
@@ -153,13 +171,14 @@ jobs:
           sparse-checkout: scripts
 
       - name: Free disk space
-        if: inputs.free_disk_space
+        if: inputs.free_disk_space && !(startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag)
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           RUNNER_OS: ${{ runner.os }}
         run: bash reusable-workflow-tools/scripts/free-disk-space.sh
 
       - name: Set up QEMU
+        if: "!(startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag)"
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Docker Buildx
@@ -178,14 +197,16 @@ jobs:
           context: .
           push: true
           platforms: ${{ inputs.target_platforms }}
-          tags: ${{ inputs.repository_name }}:latest
+          tags: |
+            ${{ inputs.repository_name }}:latest
+            ${{ inputs.push_sha_tag && format('{0}:sha-{1}', inputs.repository_name, github.sha) || '' }}
           cache-from: type=gha,scope=${{ github.event.repository.name }}-single
           cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.event.repository.name }}-single
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
       - name: Push release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && !inputs.promote_on_tag
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
@@ -196,6 +217,20 @@ jobs:
           cache-to: type=gha,mode=${{ inputs.cache_mode }},ignore-error=true,scope=${{ github.event.repository.name }}-single
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
+
+      # promote_on_tag alternative to "Push release" above: re-point the
+      # release tag at the sha tag the default-branch run already pushed,
+      # by digest, through every platform, with no build. The build job's
+      # `needs:` graph (scan, sbom, release, description) is unaffected: this
+      # step runs in the same job, so a success here still reads as
+      # needs.build.result == 'success' downstream.
+      - name: Promote release tag
+        if: startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag
+        env:
+          REPOSITORY: ${{ inputs.repository_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: bash reusable-workflow-tools/scripts/docker-promote.sh
 
       # Docker Hub has a short description and a long one, and no field at all
       # for a link -- the same gap GitLab has. The long description IS the
@@ -259,7 +294,7 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success'
+    if: startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success' && inputs.create_release
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: write
@@ -432,13 +467,14 @@ jobs:
           sparse-checkout: scripts
 
       - name: Free disk space
-        if: inputs.free_disk_space
+        if: inputs.free_disk_space && !(startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag)
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           RUNNER_OS: ${{ runner.os }}
         run: bash reusable-workflow-tools/scripts/free-disk-space.sh
 
       - name: Set up QEMU
+        if: "!(startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag)"
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Docker Buildx
@@ -459,7 +495,9 @@ jobs:
           file: ${{ matrix.file || 'Dockerfile' }}
           platforms: ${{ matrix.platforms || inputs.target_platforms }}
           target: ${{ matrix.target || '' }}
-          tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
+          tags: |
+            ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
+            ${{ inputs.push_sha_tag && format('{0}:{1}sha-{2}{3}', inputs.repository_name, matrix.tag_prefix || '', github.sha, matrix.tag_suffix || '') || '' }}
           build-args: ${{ matrix.build_args || '' }}
           cache-from: ${{ matrix.cache_from || format('type=gha,scope={0}-{1}-{2}-{3}{4}', github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
@@ -467,7 +505,7 @@ jobs:
           sbom: ${{ inputs.attestations }}
 
       - name: Push release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && !inputs.promote_on_tag
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
@@ -481,6 +519,16 @@ jobs:
           cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
+
+      - name: Promote release tag
+        if: startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag
+        env:
+          REPOSITORY: ${{ inputs.repository_name }}
+          TAG_PREFIX: ${{ matrix.tag_prefix || '' }}
+          TAG_SUFFIX: ${{ matrix.tag_suffix || '' }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: bash reusable-workflow-tools/scripts/docker-promote.sh
 
   # Wave 1 — runs only after every wave-0 target has pushed. Identical build
   # steps; the sole differences are the matrix source (wave1) and the `needs`
@@ -517,13 +565,14 @@ jobs:
           sparse-checkout: scripts
 
       - name: Free disk space
-        if: inputs.free_disk_space
+        if: inputs.free_disk_space && !(startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag)
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           RUNNER_OS: ${{ runner.os }}
         run: bash reusable-workflow-tools/scripts/free-disk-space.sh
 
       - name: Set up QEMU
+        if: "!(startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag)"
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Docker Buildx
@@ -544,7 +593,9 @@ jobs:
           file: ${{ matrix.file || 'Dockerfile' }}
           platforms: ${{ matrix.platforms || inputs.target_platforms }}
           target: ${{ matrix.target || '' }}
-          tags: ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
+          tags: |
+            ${{ inputs.repository_name }}:${{ matrix.tag_prefix || '' }}latest${{ matrix.tag_suffix || '' }}
+            ${{ inputs.push_sha_tag && format('{0}:{1}sha-{2}{3}', inputs.repository_name, matrix.tag_prefix || '', github.sha, matrix.tag_suffix || '') || '' }}
           build-args: ${{ matrix.build_args || '' }}
           cache-from: ${{ matrix.cache_from || format('type=gha,scope={0}-{1}-{2}-{3}{4}', github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
           cache-to: ${{ matrix.cache_to || format('type=gha,mode={0},ignore-error=true,scope={1}-{2}-{3}-{4}{5}', inputs.cache_mode, github.event.repository.name, matrix.file || 'Dockerfile', matrix.target || 'default', matrix.tag_prefix || 'default', matrix.tag_suffix || 'default') }}
@@ -552,7 +603,7 @@ jobs:
           sbom: ${{ inputs.attestations }}
 
       - name: Push release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && !inputs.promote_on_tag
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
@@ -567,6 +618,16 @@ jobs:
           provenance: ${{ inputs.attestations && 'mode=max' || 'false' }}
           sbom: ${{ inputs.attestations }}
 
+      - name: Promote release tag
+        if: startsWith(github.ref, 'refs/tags/') && inputs.promote_on_tag
+        env:
+          REPOSITORY: ${{ inputs.repository_name }}
+          TAG_PREFIX: ${{ matrix.tag_prefix || '' }}
+          TAG_SUFFIX: ${{ matrix.tag_suffix || '' }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: bash reusable-workflow-tools/scripts/docker-promote.sh
+
   release-multi:
     needs: [build-multi, build-multi-wave1]
     # `always()` is load-bearing, not decoration. Without it GitHub skips this
@@ -575,7 +636,7 @@ jobs:
     # chance to run. A repo with no wave-1 targets therefore built and pushed
     # its images but never cut a GitHub Release. `scan-multi` has carried this
     # guard all along; these jobs were missing it.
-    if: always() && startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped')
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.build-multi.result == 'success' && (needs.build-multi-wave1.result == 'success' || needs.build-multi-wave1.result == 'skipped') && inputs.create_release
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: write

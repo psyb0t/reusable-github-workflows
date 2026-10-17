@@ -1,0 +1,129 @@
+name: Wait For Default Branch Workflow
+
+# Lets a tag release what the default branch already built and tested,
+# instead of rebuilding or retesting the same commit. A tag is annotated on a
+# commit that was already pushed to the default branch (and already ran
+# `on: push` there); this workflow blocks the tag's pipeline until THAT push
+# run of THIS SAME caller workflow file finishes, and hands back its run id so
+# a later job (docker-image-workflow's `promote_on_tag`, create-badges'
+# `coverage_run_id`) can reuse what it produced.
+#
+# Three distinct outcomes, reported as three distinct failures:
+#   - the push run has not registered yet (a tag lands seconds after its
+#     commit): polled for up to `appear_grace_minutes`, then a clear message
+#     to push the commit before tagging it;
+#   - the push run is still in progress: polled for up to `timeout_minutes`;
+#   - the push run finished and failed: fails with its conclusion and URL,
+#     telling the caller to fix the default branch and re-run or re-tag.
+#
+# Example caller (release-from-default-branch pattern):
+#
+#   jobs:
+#     wait:
+#       if: startsWith(github.ref, 'refs/tags/')
+#       permissions:
+#         actions: read
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/wait-for-default-branch.yml@master
+#
+#     docker:
+#       needs: [wait]
+#       if: startsWith(github.ref, 'refs/tags/')
+#       uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+#       with:
+#         repository_name: you/yourimage
+#         promote_on_tag: true
+#         create_release: false
+#       secrets: ...
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: "Default-branch name the push run must have run on. Empty uses github.event.repository.default_branch."
+        required: false
+        type: string
+        default: ""
+
+      timeout_minutes:
+        description: "Give up waiting for the default-branch run to COMPLETE after this many minutes, once it has been found."
+        required: false
+        type: number
+        default: 120
+
+      poll_seconds:
+        description: "Delay between polls of the GitHub Actions API."
+        required: false
+        type: number
+        default: 30
+
+      appear_grace_minutes:
+        description: "A tag is pushed seconds after the commit it tags, so the default-branch push run can still be registering when this workflow starts. Give up waiting for it to APPEAR after this many minutes."
+        required: false
+        type: number
+        default: 10
+
+      runs_on:
+        description: "Runner to use (e.g. ubuntu-latest, self-hosted)."
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    outputs:
+      run_id:
+        description: "The id of the default-branch push run that succeeded. Pass it to a downstream job that needs that run's artifacts (e.g. create-badges.yml's coverage_run_id)."
+        value: ${{ jobs.wait.outputs.run_id }}
+
+concurrency:
+  group: ${{ github.workflow }}-wait-for-default-branch-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  wait:
+    name: Wait For Default Branch
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      actions: read
+    outputs:
+      run_id: ${{ steps.wait.outputs.run_id }}
+    steps:
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
+      # github.workflow_ref is the CALLER's own ref, e.g.
+      # "owner/repo/.github/workflows/pipeline.yml@refs/heads/main". The path
+      # between the repo and "@" is the workflow file whose push run we must
+      # find: the caller's own pipeline, not this reusable workflow's path.
+      - name: Derive the caller workflow path
+        id: derive
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          path="${WORKFLOW_REF#"${REPOSITORY}/"}"
+          path="${path%@*}"
+          if [ -z "${path}" ] || [ "${path}" = "${WORKFLOW_REF}" ]; then
+            echo "::error::could not derive the caller workflow path from workflow_ref=${WORKFLOW_REF}"
+            exit 1
+          fi
+          echo "path=${path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Wait for the default-branch run
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ inputs.branch != '' && inputs.branch || github.event.repository.default_branch }}
+          WORKFLOW_PATH: ${{ steps.derive.outputs.path }}
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+          POLL_SECONDS: ${{ inputs.poll_seconds }}
+          APPEAR_GRACE_MINUTES: ${{ inputs.appear_grace_minutes }}
+        run: bash reusable-workflow-tools/scripts/wait-for-default-branch.sh

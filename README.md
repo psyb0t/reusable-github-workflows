@@ -15,6 +15,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
 - [Pinning](#pinning)
 - [Workflows](#workflows)
   - [collaborators-only-workflow.yml](#collaborators-only-workflowyml)
+  - [wait-for-default-branch.yml](#wait-for-default-branchyml)
   - [docker-image-workflow.yml](#docker-image-workflowyml)
   - [go-workflow.yml](#go-workflowyml)
   - [python-package-workflow.yml](#python-package-workflowyml)
@@ -47,6 +48,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | Workflow | What it does |
 |---|---|
 | [`collaborators-only-workflow.yml`](#collaborators-only-workflowyml) | Close (and optionally lock) PRs from non-collaborators. |
+| [`wait-for-default-branch.yml`](#wait-for-default-branchyml) | Block a tag's pipeline until the default branch's push run of the same commit finishes, so a release can reuse what it already built instead of rebuilding. |
 | [`docker-image-workflow.yml`](#docker-image-workflowyml) | Buildx multi-arch / multi-target Docker Hub publish + SBOM/provenance + Grype scan → Security tab + GitHub Release. |
 | [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
@@ -100,6 +102,99 @@ jobs:
       lock: true
 ```
 
+## wait-for-default-branch.yml
+
+Lets a tag release what the default branch already built and tested, instead of rebuilding or retesting the same commit. A release tag is pushed on a commit that already ran on the default branch; this workflow blocks the tag's pipeline until **that** default-branch push run of **this same caller workflow file** finishes, and hands back its run id so a later job can reuse what it produced. `docker-image-workflow.yml`'s `promote_on_tag` re-points the release tag at the image the default-branch run already pushed, and `create-badges.yml`'s `coverage_run_id` reads the coverage artifact from it.
+
+Three outcomes, reported as three distinct failures:
+
+- the push run has not registered yet (a tag lands seconds after the commit it tags), polled for up to `appear_grace_minutes`, then a message telling you to push the commit before tagging it;
+- the push run is still in progress, polled for up to `timeout_minutes`;
+- the push run finished and failed, failing with its conclusion and URL and telling you to fix the default branch and re-run or re-tag.
+
+A re-run of the default-branch push is read correctly: the run's own status and conclusion already reflect its latest attempt, so a plain re-fetch by run id is always enough.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `branch` | string | `""` | Default-branch name the push run must have run on. Empty uses `github.event.repository.default_branch`. |
+| `timeout_minutes` | number | `120` | Give up waiting for the default-branch run to COMPLETE after this many minutes, once it has been found. |
+| `poll_seconds` | number | `30` | Delay between polls of the GitHub Actions API. |
+| `appear_grace_minutes` | number | `10` | A tag is pushed seconds after the commit it tags, so the default-branch push run can still be registering when this workflow starts. Give up waiting for it to APPEAR after this many minutes. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner to use. |
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `run_id` | The id of the default-branch push run that succeeded. Pass it to a downstream job that needs that run's artifacts. |
+
+### Permissions
+
+The job needs `actions: read` to query the GitHub Actions API for runs other than the current one. The calling job must grant it.
+
+### Example: release from the default branch without rebuilding
+
+Code builds and tests on every push to the default branch and on pull requests, tagging the image with `push_sha_tag: true`. A tag release waits for that push run, then promotes its image, cuts the release from the tag's own notes, and publishes the badges from the same run. Nothing rebuilds.
+
+```yaml
+name: pipeline
+on: [push, pull_request]
+
+jobs:
+  docker:
+    if: github.ref_name == github.event.repository.default_branch || github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      security-events: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: you/yourimage
+      push_sha_tag: true
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  wait:
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      actions: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/wait-for-default-branch.yml@master
+
+  docker-promote:
+    needs: [wait]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: you/yourimage
+      promote_on_tag: true
+      create_release: false
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  release:
+    needs: [docker-promote]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/release-workflow.yml@master
+
+  badges:
+    needs: [wait, docker-promote]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      actions: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
+    with:
+      coverage: true
+      coverage_run_id: ${{ needs.wait.outputs.run_id }}
+```
+
 ## docker-image-workflow.yml
 
 Builds and pushes a multi-arch Docker image to Docker Hub.
@@ -110,7 +205,8 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 > **The Docker Hub token needs Read, Write and Delete.** Pushing an image needs Write. Updating repository metadata, including the description, README, and visibility, needs the Docker Hub scope that also includes Delete. Nothing in this workflow issues a `DELETE`.
 - Generates SBOM + max-mode provenance attestations by default (toggle off with `attestations: false` if your registry rejects OCI attestation manifests).
 - Uploads a downloadable SPDX SBOM for each pushed image to the run's **Actions artifacts** (toggle off with `sbom_artifact: false`). This is the plain-file counterpart to `attestations`, which attaches the SBOM to the registry image and needs registry tooling to read.
-- On tag pushes, creates a GitHub Release once the build succeeds through the GitHub CLI. It retries transient GitHub API failures and accepts an existing published release.
+- On tag pushes, creates a GitHub Release once the build succeeds through the GitHub CLI. It retries transient GitHub API failures and accepts an existing published release. Set `create_release: false` when a separate [`release-workflow.yml`](#release-workflowyml) job owns the release instead, so a tag never produces two releases.
+- `push_sha_tag: true` also tags every target `<prefix>sha-<github.sha><suffix>` on a default-branch push, alongside the existing `<prefix>latest<suffix>`. Pair it with `promote_on_tag: true`: on a tag push the workflow then skips the build and re-points the release tag at that same sha tag (every platform, by digest, through `docker buildx imagetools create`) instead of rebuilding. Use [`wait-for-default-branch.yml`](#wait-for-default-branchyml) first so the tag's pipeline waits for the default-branch run to push that sha tag. See its README section for the full pattern.
 - Optionally scans the pushed image with the checksum verified official Grype release binary after push and uploads findings as SARIF to **Security → Code scanning**. Images and GitHub Releases never wait on scans. A finding, scanner outage, or SARIF-upload failure stays visible in its scan job without blocking publication. `scan_fail_build: true` marks the scan step failed for visibility only. The caller needs `permissions: security-events: write` for SARIF to reach the Security tab.
 
 A successful scan logs `outcome=completed`. That confirms the scanner finished, not that the image has no vulnerabilities. Read the SARIF findings in the Security tab; report-only scans can complete successfully with findings.
@@ -171,6 +267,9 @@ Setting `scan_vex_file` makes the scan job check out the repository. That job gr
 | `attestations` | boolean | `true` | Emit SBOM + max-mode provenance attestations. Disable if your registry rejects OCI attestation manifests. |
 | `sbom_artifact` | boolean | `true` | Generate a downloadable SPDX SBOM per pushed image (with a pinned, checksum-verified syft) and upload it to the run's Actions artifacts. Independent of `attestations`, which attaches the SBOM to the registry image instead. |
 | `free_disk_space` | boolean | `true` | Free disk space before build by removing Android SDK, .NET, Haskell, selected apt packages, and preloaded Docker images. Disable it for self-hosted or non-Linux runners. The direct cleanup tool refuses those runners before invoking `sudo`. |
+| `push_sha_tag` | boolean | `false` | On a default-branch push, also tag every target `<tag_prefix>sha-<github.sha><tag_suffix>`, alongside the existing `<tag_prefix>latest<tag_suffix>`. A later tag release can promote this exact per-commit manifest with `promote_on_tag` instead of rebuilding it. |
+| `promote_on_tag` | boolean | `false` | On a tag push, skip the build entirely and re-point the release tag at the sha tag this commit already pushed from the default branch (every platform, by digest, via `docker buildx imagetools create`) instead of rebuilding. Requires the default-branch run that built this commit to have set `push_sha_tag: true`; pair with [`wait-for-default-branch.yml`](#wait-for-default-branchyml) so the tag pipeline waits for that run first. Fails with a clear message when the source sha tag is missing. |
+| `create_release` | boolean | `true` | Create the built-in GitHub Release for a tag push. Set `false` when a separate [`release-workflow.yml`](#release-workflowyml) job owns the release instead. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. Use your self-hosted runner label + `free_disk_space: false`. |
 
 ### Secrets
@@ -594,15 +693,21 @@ jobs:
 Cuts a GitHub release for a tag: tag plus notes, no artifacts, since these repos ship Docker images and pip-installable packages rather than bare binaries. Uses the pre-installed `gh` CLI, not a third-party action. Pair it with [`code-workflow.yml`](#code-workflowyml) and [`docker-image-workflow.yml`](#docker-image-workflowyml) and gate it on them with `needs:`.
 
 - Runs only on `refs/tags/*`, or for the tag named in `tag`. A tag pushed with `GITHUB_TOKEN` starts no new workflow run, so a caller that created the tag itself passes it explicitly ([`regen-and-update-repo.yml`](#regen-and-update-repoyml) does).
-- `changelog_file`: its contents become the release body. Empty means `gh` generates notes from the commits since the last tag.
 - A tag matching `prerelease_match` (default `alpha` / `beta` / `rc`) is flagged as a prerelease.
-- Idempotent: a re-run of a tag whose release already exists is a no-op.
+
+**Release notes precedence:**
+
+1. `changelog_file`, when set and present on disk.
+2. Else the **annotated** tag's own message body (the text below the `vX.Y.Z` subject line of `git tag -a -m`, signature block excluded), when it is non-blank. A lightweight tag has no body, so this falls through for it, and so does a blank annotated body.
+3. Else `gh`'s own generated notes (commits since the previous tag). That is the only behavior a lightweight tag or an empty annotated body ever had.
+
+A release that already exists is repaired (`gh release edit --notes-file`) only when the notes came from (1) or (2): your own words win over whatever created the release first, such as `docker-image-workflow.yml`'s built-in release job (pair this workflow with `create_release: false` there to avoid cutting two releases in the first place). A release whose notes would come from (3) is left alone, which was this workflow's only behavior before notes precedence (2) existed.
 
 ### Inputs
 
 | Input | Type | Default | Description |
 |---|---|---|---|
-| `changelog_file` | string | `""` | File whose contents become the release body. Empty = generated notes. |
+| `changelog_file` | string | `""` | File whose contents become the release body. Empty falls through to the annotated tag's own body, then to generated notes (see precedence above). |
 | `prerelease_match` | string | `"(alpha\|beta\|rc)"` | Regex of tag substrings that mark a prerelease. |
 | `tag` | string | `""` | Tag to release. Empty uses the triggering tag ref. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
@@ -872,6 +977,8 @@ It lists only public packages pkg.go.dev has crawled, and the crawl lags publica
 
 The coverage value usually arrives through `go-workflow.yml`'s `coverage_file` input. The badges job writes only SVGs to the `badges` branch, with `[skip ci]` on its commit. Runs targeting the same caller repository and branch are serialized.
 
+**Reading coverage from another run.** Set `coverage_run_id` to pull the coverage artifact from a different workflow run, for example the default-branch run a tag release promotes instead of rebuilding (see [`wait-for-default-branch.yml`](#wait-for-default-branchyml)'s `run_id` output). This needs a separate, opt-in job internal to this workflow that requests `permissions: actions: read` to call the GitHub Actions API across runs; that job only runs when `coverage_run_id` is set, so every caller that leaves it empty is unaffected and needs no new permission. A caller that does set it must grant `actions: read` on its own calling job, or the cross-run download fails.
+
 ### Inputs
 
 | Input | Default | Description |
@@ -879,6 +986,7 @@ The coverage value usually arrives through `go-workflow.yml`'s `coverage_file` i
 | `coverage` | `false` | Generate the coverage badge by reading a percentage from a file. |
 | `coverage_artifact` | `coverage` | Artifact to download the coverage file from (empty = file already in the workspace). |
 | `coverage_file` | `coverage-percent.txt` | Path to the file containing the coverage percentage. |
+| `coverage_run_id` | `""` | Read the coverage artifact from this OTHER workflow run instead of the current one. Empty keeps the artifact coming from the current run. Setting it requires the calling job to also grant `permissions: actions: read`. |
 | `license` | `true` | Generate the license badge. |
 | `version` | `true` | Generate the version badge. |
 | `importers` | `false` | Go modules only. Generate the imported-by badge and `importers.md` from pkg.go.dev. Off by default to avoid every caller scraping at once. |

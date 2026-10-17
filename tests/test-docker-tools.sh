@@ -11,6 +11,7 @@ readonly MCP_REGISTRY_PUBLISH_SCRIPT="${REPOSITORY_DIR}/scripts/mcp-registry-pub
 readonly GRYPE_SCRIPT="${REPOSITORY_DIR}/scripts/grype-scan.sh"
 readonly GITHUB_RELEASE_SCRIPT="${REPOSITORY_DIR}/scripts/github-release.sh"
 readonly FREE_DISK_SPACE_SCRIPT="${REPOSITORY_DIR}/scripts/free-disk-space.sh"
+readonly DOCKER_PROMOTE_SCRIPT="${REPOSITORY_DIR}/scripts/docker-promote.sh"
 readonly FIXTURE_USERNAME='fixture-user'
 readonly FIXTURE_TOKEN='fixture-token'
 readonly FIXTURE_JWT='fixture-jwt'
@@ -735,6 +736,103 @@ test_free_disk_space_rejects_self_hosted_and_continues_optional_cleanup_failures
 	assert_file_contains "${case_dir}/sudo-args" 'docker' 'GitHub hosted disk cleanup removes images'
 }
 
+write_docker_promote_mock() {
+	local case_dir=$1
+
+	cat >"${case_dir}/bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly case_dir="${TEST_CASE_DIR:?}"
+printf '%s\n' "$@" >>"${case_dir}/docker-promote-args"
+
+if [[ "$1 $2 $3" == 'buildx imagetools inspect' ]]; then
+	if [[ "${MOCK_INSPECT_FAIL:-false}" == true ]]; then
+		exit 1
+	fi
+	exit 0
+fi
+
+if [[ "$1 $2 $3" == 'buildx imagetools create' ]]; then
+	if [[ "${MOCK_CREATE_FAIL:-false}" == true ]]; then
+		exit 1
+	fi
+	exit 0
+fi
+
+exit 1
+MOCK
+	chmod +x "${case_dir}/bin/docker"
+
+	cat >"${case_dir}/bin/sleep" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+MOCK
+	chmod +x "${case_dir}/bin/sleep"
+}
+
+run_docker_promote_case() {
+	local case_dir=$1
+	local tag_prefix=$2
+	local tag_suffix=$3
+	local inspect_fail=$4
+	local create_fail=$5
+	local expected_status=$6
+
+	run_expected "${expected_status}" env \
+		PATH="${case_dir}/bin:${PATH}" \
+		TEST_CASE_DIR="${case_dir}" \
+		RUNNER_TEMP="${case_dir}" \
+		LOG_FILE="${case_dir}/docker-promote.log" \
+		REPOSITORY="${FIXTURE_REPOSITORY}" \
+		TAG_PREFIX="${tag_prefix}" \
+		TAG_SUFFIX="${tag_suffix}" \
+		RELEASE_TAG='v1.2.3' \
+		SOURCE_SHA='abc123' \
+		MOCK_INSPECT_FAIL="${inspect_fail}" \
+		MOCK_CREATE_FAIL="${create_fail}" \
+		bash "${DOCKER_PROMOTE_SCRIPT}"
+}
+
+test_docker_promote_success() {
+	local case_dir
+	case_dir=$(new_case 'docker-promote-success')
+	write_docker_promote_mock "${case_dir}"
+
+	run_docker_promote_case "${case_dir}" '' '' false false 0
+	assert_file_contains "${case_dir}/docker-promote-args" "${FIXTURE_REPOSITORY}:sha-abc123" 'promote inspects the source sha tag'
+	assert_file_contains "${case_dir}/docker-promote-args" "${FIXTURE_REPOSITORY}:v1.2.3" 'promote creates the release tag'
+
+	case_dir=$(new_case 'docker-promote-success-prefix-suffix')
+	write_docker_promote_mock "${case_dir}"
+	run_docker_promote_case "${case_dir}" 'cell-' '-cuda' false false 0
+	assert_file_contains "${case_dir}/docker-promote-args" "${FIXTURE_REPOSITORY}:cell-sha-abc123-cuda" 'promote applies tag_prefix and tag_suffix to the source'
+	assert_file_contains "${case_dir}/docker-promote-args" "${FIXTURE_REPOSITORY}:cell-v1.2.3-cuda" 'promote applies tag_prefix and tag_suffix to the destination'
+}
+
+test_docker_promote_fails_on_missing_source() {
+	local case_dir
+	case_dir=$(new_case 'docker-promote-missing-source')
+	write_docker_promote_mock "${case_dir}"
+
+	run_docker_promote_case "${case_dir}" '' '' true false 1
+	if grep -Fq 'imagetools create' "${case_dir}/docker-promote-args"; then
+		fail 'promote must not create a release tag when the source sha tag is missing'
+	fi
+	jq -Rse '[split("\n")[] | fromjson? | select(.level == "ERROR" and (.msg | test("source sha tag not found")))] | length == 1' \
+		"${case_dir}/docker-promote.log" >/dev/null || fail 'promote must log the missing-source error clearly'
+}
+
+test_docker_promote_fails_when_create_fails() {
+	local case_dir
+	case_dir=$(new_case 'docker-promote-create-failure')
+	write_docker_promote_mock "${case_dir}"
+
+	run_docker_promote_case "${case_dir}" '' '' false true 1
+	assert_file_contains "${case_dir}/docker-promote-args" 'inspect' 'promote still checks the source before failing on create'
+	assert_file_contains "${case_dir}/docker-promote-args" 'create' 'promote attempts the create after a successful inspect'
+}
+
 main() {
 	test_metadata_success
 	test_metadata_visibility_only
@@ -748,6 +846,9 @@ main() {
 	test_grype_stops_before_login_on_checksum_failure
 	test_github_release_idempotence_and_retry
 	test_free_disk_space_rejects_self_hosted_and_continues_optional_cleanup_failures
+	test_docker_promote_success
+	test_docker_promote_fails_on_missing_source
+	test_docker_promote_fails_when_create_fails
 	log INFO 'docker tool command-boundary tests passed'
 }
 

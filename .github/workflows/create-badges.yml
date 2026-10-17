@@ -59,6 +59,11 @@ on:
         required: false
         default: "coverage-percent.txt"
         type: string
+      coverage_run_id:
+        description: "Read the coverage artifact from this OTHER workflow run instead of the current one (e.g. the default-branch run a tag release promotes, via wait-for-default-branch.yml's run_id output). Empty keeps today's behavior: the artifact comes from the current run. Downloading across runs needs the GitHub Actions API, so setting this requires the calling job to ALSO grant `permissions: actions: read`. Without it the cross-run download fails. Callers that leave this empty need no new permission."
+        required: false
+        default: ""
+        type: string
       license:
         description: "Generate the license badge (repo's SPDX id from the GitHub API)"
         required: false
@@ -104,8 +109,42 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Only this job needs `actions: read`, and only when a caller sets
+  # coverage_run_id. Its `if:` makes the job never run otherwise, so its
+  # permission request is never evaluated for any caller that leaves the
+  # input empty. Declaring `actions: read` unconditionally on create-badges
+  # itself would break every caller that doesn't grant it, whether or not
+  # they use this input (code-workflow.yml hit exactly this in v0.45.0/
+  # v0.46.0); re-uploading the file as a same-run artifact keeps that job's
+  # own permissions untouched.
+  fetch-remote-coverage:
+    name: Fetch Remote Coverage
+    if: inputs.coverage && inputs.coverage_artifact != '' && inputs.coverage_run_id != ''
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      actions: read
+    steps:
+      - name: Download coverage artifact from the other run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.coverage_artifact }}
+          run-id: ${{ inputs.coverage_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Re-upload for the badges job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-remote
+          path: ${{ inputs.coverage_file }}
+          retention-days: 1
+
   create-badges:
     name: Create Badges
+    needs: [fetch-remote-coverage]
+    # always() + the skipped tolerance: fetch-remote-coverage is normally
+    # skipped (coverage_run_id empty), and a skipped dependency must not skip
+    # this job too. docker-image-workflow.yml uses the same pattern.
+    if: always() && (needs.fetch-remote-coverage.result == 'success' || needs.fetch-remote-coverage.result == 'skipped')
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: write
@@ -116,10 +155,16 @@ jobs:
           fetch-depth: 0
 
       - name: Download coverage artifact
-        if: inputs.coverage && inputs.coverage_artifact != ''
+        if: inputs.coverage && inputs.coverage_artifact != '' && inputs.coverage_run_id == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.coverage_artifact }}
+
+      - name: Download coverage artifact from the other run
+        if: inputs.coverage && inputs.coverage_artifact != '' && inputs.coverage_run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-remote
 
       - name: Render badges
         env:
