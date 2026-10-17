@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.4 (2026-10-17)
+
+- Documentation only. The README's Pinning section tells callers to reference the workflows at `@master` instead of pinning a release tag or SHA.
+
 ## v0.53.3 (2026-10-17)
 
 - Documentation only. The v0.52.0 entry now lists the `fix_timeout_minutes` input (default 30), which shipped in that release but was missing from its notes.

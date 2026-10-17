@@ -63,14 +63,10 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 
 ## Pinning
 
-The examples below use `@master` for readability. **Do not use `@master` in production.** Pin to a release tag (`@v0.13.0`) or a full commit SHA. `@master` follows whatever lands here without warning.
+Reference the workflows at `@master`. Releases come often, and a pinned tag or SHA falls behind with every one of them. `@master` picks up each fix as soon as it lands:
 
 ```yaml
-# Recommended: pin to a release tag
-uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@v0.13.0
-
-# Stricter: pin to a specific SHA (immune to tag re-pointing)
-uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@<full-40-char-sha>
+uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@master
 ```
 
 ## collaborators-only-workflow.yml
