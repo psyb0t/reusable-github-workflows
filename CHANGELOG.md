@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.1 (2026-10-17)
+
+- `regen-and-update-repo.yml` undoes the `CLAUDE.md` the claudebox image writes into the checkout during a fix attempt. It is removed when the repository had none and restored when it had one, so it never lands in the commit.
+- The review prompt tells Claude the workflow prepends `vX.Y.Z: ` to the subject only when `tag: true`.
+
 ## v0.53.0 (2026-10-16)
 
 **Breaking:** `regen-and-update-repo.yml` no longer publishes. The `github-release` and `clawhub` jobs, the `github_release`, `clawhub_publish`, `clawhub_skill_names` and `clawhub_plugin_names` inputs and the `CLAWHUB_TOKEN` secret are removed; callers must drop them. Pass the new `GH_PAT` secret instead, and the push runs the repository's own workflows, which do the publishing. Callers that want a version tag must set `tag: true`, because tagging now defaults to off.

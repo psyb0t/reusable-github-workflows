@@ -14,6 +14,8 @@
 #   attempt-N/context/          mounted read-only at /context for attempt N
 #   attempt-N/prompt.md         the task for attempt N
 #   attempt-N/pre-tree          tree id before attempt N
+#   attempt-N/CLAUDE.md         the repository's CLAUDE.md before attempt N,
+#                               when it had one
 #   notes-N.md, fix-N.patch     Claude's summary and diff for attempt N
 #
 # Everything under the context directory is untrusted data for the model. The
@@ -133,6 +135,12 @@ prepare() {
 		fi
 	done
 
+	# The claudebox image writes its own CLAUDE.md into the working directory.
+	# Keep the repository's copy, if any, so guard can put it back.
+	if [[ -f CLAUDE.md ]]; then
+		cp -- CLAUDE.md "${dir}/CLAUDE.md"
+	fi
+
 	tree_state >"${dir}/pre-tree"
 	write_prompt "${dir}/prompt.md"
 	log INFO "fix context prepared attempt=${ATTEMPT} diff_bytes=${size}"
@@ -215,6 +223,19 @@ summarize() {
 	} >>"${GITHUB_STEP_SUMMARY}"
 }
 
+# Undoes the claudebox image's CLAUDE.md: removed when the repository had
+# none before the attempt, restored when it had one. Its content is image
+# setup, not part of any fix.
+restore_claude_md() {
+	local dir=$1
+	if [[ -f "${dir}/CLAUDE.md" ]]; then
+		cp -- "${dir}/CLAUDE.md" CLAUDE.md
+	elif [[ -e CLAUDE.md ]]; then
+		rm -f -- CLAUDE.md
+		log INFO "removed the CLAUDE.md the claudebox image wrote attempt=${ATTEMPT}"
+	fi
+}
+
 guard() {
 	local dir pre post changed bad added notes file line glob
 	local -a globs
@@ -226,6 +247,7 @@ guard() {
 		exit 1
 	fi
 	pre="$(cat "${dir}/pre-tree")"
+	restore_claude_md "${dir}"
 	post="$(tree_state)"
 
 	notes="${RESULT:-}"

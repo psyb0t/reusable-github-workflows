@@ -476,6 +476,7 @@ jobs:
           APIDIFF_BIN: ${{ runner.temp }}/apidiff-bin/apidiff
           FIX_DIR: ${{ runner.temp }}/regen-fix
           WRITING_RULES: ${{ runner.temp }}/reusable-workflow-tools/scripts/regen-writing-rules.md
+          TAG_ENABLED: ${{ inputs.tag }}
         run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/regen-context.sh"
 
       - name: Upload patch

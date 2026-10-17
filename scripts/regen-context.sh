@@ -122,7 +122,7 @@ write_fixes() {
 
 write_prompt() {
 	local last_tag=$1
-	local version_note has_apidiff has_context has_fixes
+	local version_note has_apidiff has_context has_fixes subject_prefix_note
 
 	if [[ "${last_tag}" == "none" ]]; then
 		version_note="There is no previous release tag."
@@ -135,6 +135,8 @@ write_prompt() {
 	[[ -f "${CONTEXT_DIR}/apidiff.txt" ]] && has_apidiff="yes"
 	has_context="no"
 	[[ -f "${CONTEXT_DIR}/context.txt" ]] && has_context="yes"
+	subject_prefix_note="(it is used as written)"
+	[[ "${TAG_ENABLED:-false}" == "true" ]] && subject_prefix_note='(the workflow prepends "vX.Y.Z: ")'
 	has_fixes="no"
 	[[ -f "${CONTEXT_DIR}/fixes.md" ]] && has_fixes="yes"
 
@@ -172,7 +174,7 @@ Write exactly these five files in the output directory and nothing else:
      (for example a changed spec patch or a dependency bump).
 
 2. subject.txt: ONE line, the commit subject text WITHOUT any version prefix
-   (the workflow prepends "vX.Y.Z: "). Lower-case start, concrete, at most
+   ${subject_prefix_note}. Lower-case start, concrete, at most
    ${MAX_SUBJECT_TEXT_CHARS} characters, no trailing period, no dashes of the kinds above.
 
 3. change-kind.txt: exactly one word, one of:
