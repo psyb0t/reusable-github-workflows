@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.2 (2026-10-17)
+
+- `regen-and-update-repo.yml` runs the claudebox action from `psyb0t/docker-claudebox@master` instead of a pinned commit, like every other first-party workflow and action here, so claudebox fixes reach regen runs without a release of this repository.
+
 ## v0.53.1 (2026-10-17)
 
 - `regen-and-update-repo.yml` undoes the `CLAUDE.md` the claudebox image writes into the checkout during a fix attempt. It is removed when the repository had none and restored when it had one, so it never lands in the commit.

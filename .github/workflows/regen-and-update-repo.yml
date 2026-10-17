@@ -291,7 +291,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check0.outputs.passed == 'false' && inputs.fix_attempts >= 1
         continue-on-error: true
         timeout-minutes: ${{ inputs.fix_timeout_minutes }}
-        uses: psyb0t/docker-claudebox@8ea34232cd0941e30bbd77288c0c89a3894faab9 # v2.8.1
+        uses: psyb0t/docker-claudebox@master
         with:
           prompt-file: ${{ runner.temp }}/regen-fix/attempt-1/prompt.md
           context-path: ${{ runner.temp }}/regen-fix/attempt-1/context
@@ -341,7 +341,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check1.outputs.passed == 'false' && inputs.fix_attempts >= 2
         continue-on-error: true
         timeout-minutes: ${{ inputs.fix_timeout_minutes }}
-        uses: psyb0t/docker-claudebox@8ea34232cd0941e30bbd77288c0c89a3894faab9 # v2.8.1
+        uses: psyb0t/docker-claudebox@master
         with:
           prompt-file: ${{ runner.temp }}/regen-fix/attempt-2/prompt.md
           context-path: ${{ runner.temp }}/regen-fix/attempt-2/context
@@ -391,7 +391,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true' && inputs.check_commands != '' && inputs.check_commands != '-' && steps.check2.outputs.passed == 'false' && inputs.fix_attempts >= 3
         continue-on-error: true
         timeout-minutes: ${{ inputs.fix_timeout_minutes }}
-        uses: psyb0t/docker-claudebox@8ea34232cd0941e30bbd77288c0c89a3894faab9 # v2.8.1
+        uses: psyb0t/docker-claudebox@master
         with:
           prompt-file: ${{ runner.temp }}/regen-fix/attempt-3/prompt.md
           context-path: ${{ runner.temp }}/regen-fix/attempt-3/context
@@ -530,7 +530,7 @@ jobs:
       # The action mounts the runner's Docker socket into claudebox; this job
       # holds only the context and the Claude credential.
       - name: Run claudebox
-        uses: psyb0t/docker-claudebox@8ea34232cd0941e30bbd77288c0c89a3894faab9 # v2.8.1
+        uses: psyb0t/docker-claudebox@master
         with:
           prompt-file: ${{ runner.temp }}/regen-prompt/prompt.md
           context-path: ${{ runner.temp }}/regen-context
