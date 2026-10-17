@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.53.5 (2026-10-17)
+
+- `actions/upload-artifact` moves from v4.6.2 to v7.0.1 and `actions/download-artifact` from v4.3.0 to v8.0.1. Both now run on Node 24 instead of the deprecated Node 20. Every workflow here uploads and downloads artifacts by name, so callers change nothing.
+- `regen-and-update-repo.yml` reads its fix and review prompts from Markdown templates in `scripts/prompts/` instead of heredocs inside `regen-fix.sh` and `regen-context.sh`. `scripts/regen-prompt.sh` fills them in. The prompts Claude receives are unchanged.
+
 ## v0.53.4 (2026-10-17)
 
 - Documentation only. The README's Pinning section tells callers to reference the workflows at `@master` instead of pinning a release tag or SHA.

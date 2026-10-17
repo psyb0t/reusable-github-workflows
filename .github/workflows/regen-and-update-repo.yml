@@ -430,7 +430,7 @@ jobs:
       # inspecting what Claude saw and did. Uploaded on failure too.
       - name: Upload fix attempts
         if: always() && steps.detect.outputs.changed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regen-fix
           path: ${{ runner.temp }}/regen-fix
@@ -481,7 +481,7 @@ jobs:
 
       - name: Upload patch
         if: steps.detect.outputs.changed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regen-patch
           path: ${{ runner.temp }}/regen-patch
@@ -490,7 +490,7 @@ jobs:
 
       - name: Upload context
         if: steps.detect.outputs.changed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regen-context
           path: ${{ runner.temp }}/regen-context
@@ -499,7 +499,7 @@ jobs:
 
       - name: Upload prompt
         if: steps.detect.outputs.changed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regen-prompt
           path: ${{ runner.temp }}/regen-prompt
@@ -516,13 +516,13 @@ jobs:
       contents: read
     steps:
       - name: Download context
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: regen-context
           path: ${{ runner.temp }}/regen-context
 
       - name: Download prompt
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: regen-prompt
           path: ${{ runner.temp }}/regen-prompt
@@ -543,7 +543,7 @@ jobs:
       # release validates it and falls back when it is missing or malformed.
       - name: Upload review
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: regen-review
           path: ${{ runner.temp }}/regen-review
@@ -591,13 +591,13 @@ jobs:
         run: mv .reusable-workflow-tools "${RUNNER_TEMP}/reusable-workflow-tools"
 
       - name: Download patch
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: regen-patch
           path: ${{ runner.temp }}/regen-patch
 
       - name: Download context
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: regen-context
           path: ${{ runner.temp }}/regen-context
@@ -606,7 +606,7 @@ jobs:
       # then uses its fallbacks.
       - name: Download review
         continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: regen-review
           path: ${{ runner.temp }}/regen-review

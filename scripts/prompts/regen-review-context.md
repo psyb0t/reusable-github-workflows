@@ -1,0 +1,1 @@
+- context.txt: extra facts the repository collected about this regeneration (for example upstream version lines).

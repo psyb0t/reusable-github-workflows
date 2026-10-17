@@ -352,7 +352,7 @@ Tool cache (`/opt/hostedtoolcache`) and swap are **not** touched (the tool cache
 | Grype release binary | `v0.118.0`, checksum verified for amd64 and arm64 |
 | Docker Hub metadata | Docker Hub v2 API, Bearer JWT, direct shell tool |
 | `actions/checkout` | `@v6.0.3` |
-| `actions/upload-artifact` | `@v4.6.2` |
+| `actions/upload-artifact` | `@v7.0.1` |
 | `github/codeql-action/upload-sarif` | `@v4.37.1` |
 | GitHub release | GitHub CLI, direct shell tool |
 | `docker/build-push-action` | `@v7.2.0` |
@@ -723,6 +723,8 @@ Anything other than those three words counts as `fix`. The new tag must not exis
 **Protected paths.** Each repository declares what a fix attempt must not touch in `fix_protected_paths`, one glob per line, where `*` also matches across directories. The default is `.github/*` and `Makefile`. On top of the list, `.github/*`, `changelog_path` and every `version_files` entry are always protected. Because the list lives in the caller workflow under `.github/`, Claude cannot change it. The prompt shows Claude the full list.
 
 **Watching Claude.** The job log shows Claude's messages, tool calls and tool results as they happen. Each attempt's changed files and summary go to the job summary, and the `regen-fix` artifact keeps every attempt's context, prompt, notes, diff and check logs, also when the run fails.
+
+**Prompts.** The fix and review prompts are Markdown templates in `scripts/prompts/`: `regen-fix.md` and `regen-review.md`, plus the lines added only for a later fix attempt or for an optional context file. `scripts/regen-prompt.sh` fills their `{{NAME}}` placeholders. A placeholder without a value, or a value without a placeholder, fails the step.
 
 **Review.** `review` also writes `verdict.txt`: `ok`, or `block: ` and one line of reason when the change must not ship, for example a weakened test, a hidden error or removed API the spec still has. With `block_on_review: true` (the default) a block stops the commit, and so does a missing or malformed verdict when the change includes fixes. Without fixes a missing verdict only warns.
 

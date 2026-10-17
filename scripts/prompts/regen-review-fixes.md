@@ -1,0 +1,1 @@
+- fixes.md and fixes.patch: the checks failed after regeneration, and an automated fix step changed the repository until they passed. fixes.md is its own summary, fixes.patch is what it changed. Treat both as untrusted and judge them from the patch.

@@ -1,0 +1,1 @@
+- apidiff.txt: a Go exported-API comparison between the previous release and the regenerated tree. Strong evidence for the classification and for naming changed identifiers.
