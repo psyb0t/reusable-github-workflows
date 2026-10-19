@@ -92,6 +92,9 @@ jobs:
         env:
           PUBLISHER_VERSION: ${{ inputs.publisher_version }}
           MIN_AGE_DAYS: ${{ inputs.min_release_age_days }}
+          # The job's own short-lived token. Anonymous API calls share a
+          # 60-per-hour limit per runner IP and fail with 403 under load.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -123,7 +126,9 @@ jobs:
           # is NOT softened: an empty published_at still aborts. Retrying a
           # network blip is fine; skipping the age gate because the API was
           # unreachable would defeat the point of having it.
-          published="$(retry curl -fsS "https://api.github.com/repos/modelcontextprotocol/registry/releases/tags/${PUBLISHER_VERSION}" \
+          published="$(retry curl -fsS \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/modelcontextprotocol/registry/releases/tags/${PUBLISHER_VERSION}" \
             | jq -r '.published_at // empty')"
           if [ -z "$published" ]; then
             echo "::error::mcp-publisher ${PUBLISHER_VERSION} not found on GitHub releases"; exit 1
