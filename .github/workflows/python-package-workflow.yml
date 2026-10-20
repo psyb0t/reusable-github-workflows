@@ -63,8 +63,11 @@ on:
         description: "PyPI token (not required when pypi_oidc is true)"
         required: false
 
+# The event name keeps a scheduled or manual run from cancelling the push run
+# on the same ref, which a tag release waits for through
+# wait-for-default-branch.yml.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions: {}

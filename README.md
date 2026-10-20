@@ -37,7 +37,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 
 - **Third-party actions pinned by full commit SHA.** Never use a floating tag. A re-pointed or compromised upstream tag cannot silently change what runs.
 - **Least-privilege permissions.** The top level is `permissions: {}`. Each job opts into only the scopes it needs (`contents: read`, `security-events: write`, …).
-- **Concurrency matches the resource.** A newer push on the same ref supersedes ordinary in-flight work. Tag pushes always complete. Badge publishing serializes writers for each caller repository and output branch. Mirroring serializes per caller repository without cancellation because every run carries a real ref that must reach the targets.
+- **Concurrency matches the resource.** A newer push on the same ref supersedes ordinary in-flight work. Scheduled and manual runs use their own group, so they never cancel the push run a tag release waits for. Tag pushes always complete. Badge publishing serializes writers for each caller repository and output branch. Mirroring serializes per caller repository without cancellation because every run carries a real ref that must reach the targets.
 - **Triggered from `push`.** You wire `on: [push]`. The workflow decides whether the ref applies and no-ops otherwise.
 - **Supply-chain discipline on tooling installs.** Exact version pins, an age gate that rejects fresh releases, and `npm install --ignore-scripts`.
 - **Network operations retry with exponential backoff.** Clones, pushes, package installs, and release downloads retry transient failures. Scanners (`govulncheck`, `pip-audit`) do not retry because a finding is a real failure.

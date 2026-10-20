@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.54.3 (2026-10-20)
+
+- `code-workflow.yml`, `go-workflow.yml`, `python-package-workflow.yml`, `make-checks.yml` and `docker-image-workflow.yml` add the triggering event to their concurrency group. A scheduled or manual run on the default branch used to share the push run's group and cancel it, so a tag release waiting on that push run through `wait-for-default-branch.yml` failed. Push runs still cancel older push runs on the same ref. Callers need no change.
+
 ## v0.54.2 (2026-10-19)
 
 - `mcp-registry-publish.yml` sends the job's own `github.token` when it looks up the `mcp-publisher` release date for the age gate. The lookup used to be anonymous, which shares a 60-requests-per-hour limit per runner IP, so it failed with 403 whenever many workflows ran at once. Callers need no change.
