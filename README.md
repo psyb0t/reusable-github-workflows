@@ -737,7 +737,7 @@ Publishes **skills** and **plugins** to [ClawHub](https://clawhub.ai) through th
 
 Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to validate and publish only those entries. Omit either input, or pass an empty string, to keep discovering every entry of that kind. `[]` selects none. Names match folder names, not manifest display names or npm package names. Duplicates are processed once. A malformed list, invalid folder name, or selected folder without its discoverable manifest fails before that step invokes ClawHub. Unselected entries are neither validated nor published, and their plugin versions are not changed. The existing `publish_skills` and `publish_plugins` switches still disable their respective jobs entirely.
 
-**Skills:** one skill per `<skills_dir>/<name>/SKILL.md`. The CLI derives metadata and packages regular files except dotfiles and `node_modules`. A tag mirrors its version when it is newer than ClawHub's current version. Otherwise the CLI patch-bumps. `version` overrides both paths. Existing versions count as already published. The job has `contents: read`, uses the ClawHub token for publishing, pins the CLI and actions, applies the release-age gate, and installs with `npm install -g … --ignore-scripts`. ClawHub licenses its hosted skill copy as `MIT-0`. `dry_run: true` validates without publishing.
+**Skills:** one skill per `<skills_dir>/<name>/SKILL.md`. The CLI derives metadata and packages regular files except dotfiles and `node_modules`. A tag mirrors its version when it is newer than ClawHub's current version. Otherwise the CLI patch-bumps. `version` overrides both paths. Existing versions must pass the same public visibility checks as new uploads. The job has `contents: read`, uses the ClawHub token for publishing, pins the CLI and actions, applies the release-age gate, and installs with `npm install -g … --ignore-scripts`. ClawHub licenses its hosted skill copy as `MIT-0`. `dry_run: true` validates without publishing.
 
 **Plugins:** one plugin per `<plugins_dir>/<name>/openclaw.plugin.json`. The workflow runs static `clawhub package validate` without `--runtime` or `--allow-execute`, then publishes. A tag updates `package.json#version` and `openclaw.plugin.json#version` when present. `npm pack` packages source without installing the plugin dependency tree. Plugin package names are npm-scoped (`@owner/name`).
 - **Version.** ClawHub takes the plugin's `package.json#version` as the release version. On a tag push the git tag (leading `v` stripped) is mirrored into `package.json#version` (and `openclaw.plugin.json#version` if present) before publishing.
@@ -745,6 +745,8 @@ Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to 
 - Plugin package names are npm-scoped (`@owner/name`); the scope must match a ClawHub owner you control.
 
 **ClawHub failures are distinguished.** Service, sandbox, or network faults retry `publish_attempts` times with quadratic backoff. They fail the job by default (`fail_on_upstream_error: true`) because a green release that did not publish is wrong. Set it to `false` to report a deferred publish as a warning. A validator rejection fails immediately without retries. If the validator reported findings, fix the package. If it could not start, retry later.
+
+**Skill uploads are not publication confirmations.** After an upload or an already-existing version response, the workflow checks that both the skill listing and the exact uploaded version are anonymously readable for the selected owner. It does not accept a CLI `published` message, a clean static scan, or an older public version as proof. Pending, hidden and temporarily unavailable versions are polled for up to `publication_timeout_seconds` per skill. Expiry or an invalid registry response fails the job even with `fail_on_upstream_error: false`. Polling never uploads another version. Dry runs do not poll. When an existing version cannot be identified from the explicit version or mirrored tag, verification fails; set `version` to the version being retried.
 
 ### Inputs
 
@@ -769,6 +771,8 @@ Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to 
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
 | `publish_attempts` | number | `4` | Attempts per publish before giving up. Retries apply to ClawHub-side faults only. |
 | `fail_on_upstream_error` | boolean | `true` | Fail the job when ClawHub's own service is still down after every attempt. Set `false` to downgrade to a warning + deferred summary. Rejections of your content always fail regardless. |
+| `publication_timeout_seconds` | number | `1800` | Maximum wait per skill for its listing and exact version to become public. Integer from 1 to 3600. Publication failures cannot be deferred. |
+| `publication_poll_seconds` | number | `15` | Delay between public skill checks. Integer from 1 to 60. |
 
 ### Secrets
 
@@ -802,7 +806,7 @@ To keep additional private or development skills in the repository without publi
 
 That selects `.agents/skills/android-lab/SKILL.md` and no plugins. To select specific plugins as well, use `plugin_names: '["my-plugin"]'`. ClawHub selection does not make repository files private; anything committed to a public repository remains public.
 
-Run `python3 tests/test_clawhub_selection.py -v` to test the four workflow steps against a recording CLI without publishing. The test needs Python 3 with PyYAML, Bash and jq; it needs no token or network access.
+Run `python3 -m unittest discover -s tests -p 'test_clawhub*.py' -v` to test selection and publication without uploading. The tests execute the workflow steps with a recording CLI and a loopback HTTP registry. They need Python 3 with PyYAML, Bash, curl and jq, but no credentials or external network access.
 
 ## regen-and-update-repo.yml
 

@@ -16,7 +16,33 @@ WORKFLOW = (
 CLI_MOCK = """#!/bin/bash
 set -euo pipefail
 jq -nc --args '$ARGS.positional' -- "$@" >> "$CALL_LOG"
-printf '%s\\n' '{"slug":"fixture","version":"1.2.3","status":"published"}'
+slug=fixture
+for argument in "$@"; do
+    if [[ -f "$argument/SKILL.md" ]]; then
+        slug="$(basename "$argument")"
+    fi
+done
+jq -nc --arg slug "$slug" '{slug:$slug,version:"1.2.3",status:"published"}'
+"""
+CURL_MOCK = """#!/bin/bash
+set -euo pipefail
+output=""
+identity=false
+slug=fixture
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --output) output="$2"; shift ;;
+        */whoami) identity=true ;;
+        */skills/*) slug="${1##*/skills/}"; slug="${slug%%/*}" ;;
+    esac
+    shift
+done
+if [[ "$identity" == true ]]; then
+    printf '%s\\n' '{"user":{"handle":"fixture-owner"}}' > "$output"
+else
+    jq -nc --arg slug "$slug" '{skill:{slug:$slug},version:{version:"1.2.3"}}' > "$output"
+fi
+printf 200
 """
 FIXTURE_NAMES = ("public", "private")
 FIXTURE_VERSION = "0.1.0"
@@ -43,6 +69,9 @@ class ClawHubSelectionTests(unittest.TestCase):
             cli = bin_dir / "clawhub"
             cli.write_text(CLI_MOCK)
             cli.chmod(0o755)
+            curl = bin_dir / "curl"
+            curl.write_text(CURL_MOCK)
+            curl.chmod(0o755)
             data_dir = root / ".agents" / family
             if present:
                 for name in FIXTURE_NAMES:

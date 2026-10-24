@@ -1,5 +1,6 @@
 .research_files
 # Codex / agent scratch: never commit
+AGENTS.md
 CODEX.local.md
 .agent_notes/
 .agent_knowledge/

@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.54.4 (2026-10-24)
+
+- `clawhub-publish.yml` verifies anonymous access to each skill listing and exact version before reporting publication success, including retries of existing versions. Hidden or pending versions fail after a configurable deadline instead of passing on the CLI's upload confirmation. Dry runs do not perform publication checks.
+
 ## v0.54.3 (2026-10-20)
 
 - `code-workflow.yml`, `go-workflow.yml`, `python-package-workflow.yml`, `make-checks.yml` and `docker-image-workflow.yml` add the triggering event to their concurrency group. A scheduled or manual run on the default branch used to share the push run's group and cancel it, so a tag release waiting on that push run through `wait-for-default-branch.yml` failed. Push runs still cancel older push runs on the same ref. Callers need no change.

@@ -168,6 +168,18 @@ on:
         type: boolean
         default: true
 
+      publication_timeout_seconds:
+        description: "Maximum wait per skill for its exact version to become public (1-3600 seconds). Hidden versions always fail."
+        required: false
+        type: number
+        default: 1800
+
+      publication_poll_seconds:
+        description: "Seconds between public skill-version checks (1-60)."
+        required: false
+        type: number
+        default: 15
+
     secrets:
       clawhub_token:
         description: "ClawHub API token (clh_...) with publish scope"
@@ -378,6 +390,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           PUBLISH_ATTEMPTS: ${{ inputs.publish_attempts }}
           FAIL_ON_UPSTREAM_ERROR: ${{ inputs.fail_on_upstream_error }}
+          PUBLICATION_TIMEOUT_SECONDS: ${{ inputs.publication_timeout_seconds }}
+          PUBLICATION_POLL_SECONDS: ${{ inputs.publication_poll_seconds }}
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_REF: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           SOURCE_COMMIT: ${{ github.sha }}
@@ -435,8 +449,22 @@ jobs:
           echo "Found ${#skill_dirs[@]} skill(s) under $SKILLS_DIR:"
           printf '  - %s\n' "${skill_dirs[@]}"
 
+          publication_timeout="${PUBLICATION_TIMEOUT_SECONDS:-1800}"
+          publication_poll="${PUBLICATION_POLL_SECONDS:-15}"
+          if ! [[ "$publication_timeout" =~ ^[1-9][0-9]{0,3}$ ]] ||
+             ((publication_timeout > 3600)) ||
+             ! [[ "$publication_poll" =~ ^[1-9][0-9]?$ ]] ||
+             ((publication_poll > 60)); then
+            echo "::error::Publication timeout must be an integer from 1 to 3600; poll interval must be from 1 to 60."
+            exit 1
+          fi
+
+          umask 077
           config_file="$(mktemp)"
-          trap 'rm -f "$config_file"' EXIT
+          auth_file="$(mktemp)"
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$config_file" "$auth_file" "$response_file" "$error_file"' EXIT
           jq -nc --arg registry "$REGISTRY" --arg token "$CLAWHUB_TOKEN" \
             '{registry: $registry, token: $token}' > "$config_file"
           export CLAWHUB_CONFIG_PATH="$config_file"
@@ -477,6 +505,81 @@ jobs:
               "plugin-inspector-error|could not inspect|ENOENT|EACCES|sbx_user|/convex/|convex/packages\.ts|internal server error|bad gateway|service unavailable|gateway time-?out|HTTP (429|5[0-9][0-9])|too many requests|rate ?limit|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network error|reset in [0-9]+s"
           }
 
+          publication_owner="${OWNER#@}"
+          wait_for_publication() {
+            local slug="$1" version="$2"
+            local http_status deadline remaining request_timeout delay resource public_ready
+            if ! [[ "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || ! is_semver "$version"; then
+              echo "::error::Cannot verify publication without a valid skill slug and version."
+              return 1
+            fi
+            if [ -z "$publication_owner" ]; then
+              if [[ "$CLAWHUB_TOKEN" == *$'\n'* || "$CLAWHUB_TOKEN" == *$'\r'* ]]; then
+                echo "::error::Invalid ClawHub token format."
+                return 1
+              fi
+              printf 'Authorization: Bearer %s\n' "$CLAWHUB_TOKEN" > "$auth_file"
+              if ! http_status="$(curl -q --silent --show-error --connect-timeout 5 --max-time 10 \
+                --header "@$auth_file" --output "$response_file" --write-out '%{http_code}' \
+                "${REGISTRY%/}/api/v1/whoami")" || [ "$http_status" != 200 ]; then
+                echo "::error::Cannot resolve the authenticated ClawHub owner."
+                return 1
+              fi
+              if ! publication_owner="$(jq -er '.user.handle | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"))' "$response_file")"; then
+                echo "::error::ClawHub returned an invalid owner identity."
+                return 1
+              fi
+            fi
+            deadline=$((SECONDS + publication_timeout))
+            while ((SECONDS < deadline)); do
+              public_ready=true
+              for resource in "" "/versions/$version"; do
+                remaining=$((deadline - SECONDS))
+                if ((remaining <= 0)); then
+                  public_ready=false; break
+                fi
+                request_timeout=10
+                ((request_timeout <= remaining)) || request_timeout="$remaining"
+                if http_status="$(curl -q --silent --show-error --connect-timeout 5 \
+                  --max-time "$request_timeout" --max-filesize 1048576 \
+                  --output "$response_file" --write-out '%{http_code}' \
+                  --get --data-urlencode "ownerHandle=$publication_owner" \
+                  "${REGISTRY%/}/api/v1/skills/$slug$resource")"; then
+                  case "$http_status" in
+                    200)
+                      if jq -e --arg slug "$slug" --arg version "$version" --arg resource "$resource" \
+                        '.skill.slug == $slug and ($resource == "" or
+                         (.version.version == $version and
+                          (.version.publicationStatus // "published") == "published"))' "$response_file" >/dev/null; then
+                        continue
+                      fi
+                      echo "::error::Public registry response does not match $slug@$version."
+                      return 1
+                      ;;
+                    403|404|429|5??) ;;
+                    *)
+                      echo "::error::Public version lookup failed for $slug@$version (HTTP $http_status)."
+                      return 1
+                      ;;
+                  esac
+                fi
+                public_ready=false; break
+              done
+              if [ "$public_ready" = true ]; then
+                echo "  $slug@$version is publicly readable for @$publication_owner"
+                return 0
+              fi
+              echo "  Waiting for $slug@$version to become public (HTTP ${http_status:-000})"
+              remaining=$((deadline - SECONDS))
+              ((remaining > 0)) || break
+              delay="$publication_poll"
+              ((delay <= remaining)) || delay="$remaining"
+              sleep "$delay"
+            done
+            echo "::error::$slug@$version did not become public within ${publication_timeout}s. Upload acceptance is not publication; check ClawHub moderation."
+            return 1
+          }
+
           for dir in "${skill_dirs[@]}"; do
             name="$(basename "$dir")"
             echo "── $name ──────────────────────────────"
@@ -514,21 +617,39 @@ jobs:
             attempt=1
             outcome=""
             while :; do
-              if clawhub "${args[@]}" > "$out_file" 2>/tmp/clawhub.err; then
-                slug="$(jq -r '.slug // empty' "$out_file")"
-                version="$(jq -r '.version // empty' "$out_file")"
-                status="$(jq -r '.status // "unknown"' "$out_file")"
-                echo "  ${slug:-$name}@${version:-?} — $status"
-                published+=("${slug:-$name}@${version:-?} ($status)"); outcome="ok"; break
+              if clawhub "${args[@]}" > "$out_file" 2>"$error_file"; then
+                if [ "$DRY_RUN" = "true" ]; then
+                  published+=("$name (dry run)"); outcome="ok"; break
+                fi
+                if ! slug="$(jq -er '.slug | select(type == "string")' "$out_file")" ||
+                   ! version="$(jq -er '.version | select(type == "string")' "$out_file")"; then
+                  failed+=("$name (invalid publication metadata)"); outcome="publication"; break
+                fi
+                if [ "$slug" != "$(sanitize_slug "$name")" ] ||
+                   { [ "${#version_args[@]}" -gt 0 ] && [ "$version" != "${version_args[1]}" ]; }; then
+                  echo "::error::Upload metadata does not match the selected skill or version."
+                  failed+=("$name (publication metadata mismatch)"); outcome="publication"; break
+                fi
+                if ! wait_for_publication "$slug" "$version"; then
+                  failed+=("$name (publication unverified)"); outcome="publication"; break
+                fi
+                published+=("$slug@$version (public)"); outcome="ok"; break
               fi
 
-              err="$(cat /tmp/clawhub.err)"
+              err="$(cat "$error_file")"
               body="$(cat "$out_file")"
               both="$err$body"
 
               if printf '%s' "$both" | grep -qiE "already exists"; then
-                echo "  $name — already published at this version; skipping"
-                published+=("$name (already published)"); outcome="ok"; break
+                slug="$(sanitize_slug "$name")"
+                version="${version_args[1]:-}"
+                if [ "$DRY_RUN" = "true" ]; then
+                  published+=("$name (dry run)"); outcome="ok"; break
+                fi
+                if ! wait_for_publication "$slug" "$version"; then
+                  failed+=("$name (existing version not public)"); outcome="publication"; break
+                fi
+                published+=("$slug@$version (already public)"); outcome="ok"; break
               fi
 
               # A rejection of OUR content is final — never retried, never softened.
