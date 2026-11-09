@@ -475,6 +475,11 @@ jobs:
           }
           is_semver() { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; }
           ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
+          next_patch() { printf '%s' "${1%%[-+]*}" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }'; }
+          # A version number taken by an upload that never went public (for
+          # example one held in moderation) blocks the CLI's own patch bump with
+          # "already exists". Step past it explicitly, a bounded number of times.
+          MAX_VERSION_BUMPS=5
 
           REPO_VER=""
           case "$SOURCE_REF" in
@@ -602,21 +607,25 @@ jobs:
               echo "  version: auto patch-bump (no tag / not semver)"
             fi
 
-            args=(--site "$SITE" --registry "$REGISTRY"
+            base_args=(--site "$SITE" --registry "$REGISTRY"
               skill publish "$dir" --json
               --source-repo "$SOURCE_REPO"
               --source-commit "$SOURCE_COMMIT"
               --source-path "$dir")
-            [ -n "$SOURCE_REF" ] && args+=(--source-ref "$SOURCE_REF")
-            [ -n "$OWNER" ] && args+=(--owner "$OWNER")
-            [ -n "$TAGS" ] && args+=(--tags "$TAGS")
-            [ "${#version_args[@]}" -gt 0 ] && args+=("${version_args[@]}")
-            [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+            [ -n "$SOURCE_REF" ] && base_args+=(--source-ref "$SOURCE_REF")
+            [ -n "$OWNER" ] && base_args+=(--owner "$OWNER")
+            [ -n "$TAGS" ] && base_args+=(--tags "$TAGS")
+            [ "$DRY_RUN" = "true" ] && base_args+=(--dry-run)
+            auto_version=false
+            [ "${#version_args[@]}" -eq 0 ] && auto_version=true
 
             out_file="$(mktemp)"
             attempt=1
+            bumps=0
             outcome=""
             while :; do
+              args=("${base_args[@]}")
+              [ "${#version_args[@]}" -gt 0 ] && args+=("${version_args[@]}")
               if clawhub "${args[@]}" > "$out_file" 2>"$error_file"; then
                 if [ "$DRY_RUN" = "true" ]; then
                   published+=("$name (dry run)"); outcome="ok"; break
@@ -646,7 +655,24 @@ jobs:
                 if [ "$DRY_RUN" = "true" ]; then
                   published+=("$name (dry run)"); outcome="ok"; break
                 fi
+                if [ "$auto_version" = true ]; then
+                  # Identical content would have come back "unchanged", so this
+                  # is new content colliding with a taken version number.
+                  taken="$version"
+                  [ -n "$taken" ] || taken="$(printf '%s' "$both" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?' | head -1 || true)"
+                  [ -n "$taken" ] || taken="$(curl -fsS "$REGISTRY/api/v1/skills/$slug" 2>/dev/null | jq -r '.latestVersion.version // empty' 2>/dev/null || true)"
+                  if ! is_semver "$taken" || [ "$bumps" -ge "$MAX_VERSION_BUMPS" ]; then
+                    echo "::error::$name — version ${taken:-<unknown>} already exists and no free version was found: ${err:-$body}"
+                    failed+=("$name (version conflict)"); outcome="publication"; break
+                  fi
+                  next="$(next_patch "$taken")"
+                  echo "  version ${taken} is already taken; publishing ${next} instead"
+                  version_args=(--version "$next")
+                  bumps=$((bumps + 1))
+                  continue
+                fi
                 if ! wait_for_publication "$slug" "$version"; then
+                  echo "  CLI said: ${err:-$body}"
                   failed+=("$name (existing version not public)"); outcome="publication"; break
                 fi
                 published+=("$slug@$version (already public)"); outcome="ok"; break

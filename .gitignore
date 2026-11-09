@@ -44,3 +44,6 @@ reusable-flow-refactor.md
 
 .testing/
 __pycache__/
+
+# Local agent and editor settings.
+*.local.json

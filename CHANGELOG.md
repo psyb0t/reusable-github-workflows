@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.54.5 (2026-11-09)
+
+- `clawhub-publish.yml` no longer fails when the CLI's automatic patch bump collides with a version number that is already taken, for example by an earlier upload that never went public. The step used to report `Cannot verify publication without a valid skill slug and version` because it had no version to check. It now publishes the next free patch explicitly, up to five steps, then fails with a version-conflict error that includes the CLI's message. Explicit and tag-mirrored versions keep the existing visibility check, which now also prints the CLI's message when it fails. Callers need no change.
+
 ## v0.54.4 (2026-10-24)
 
 - `clawhub-publish.yml` verifies anonymous access to each skill listing and exact version before reporting publication success, including retries of existing versions. Hidden or pending versions fail after a configurable deadline instead of passing on the CLI's upload confirmation. Dry runs do not perform publication checks.

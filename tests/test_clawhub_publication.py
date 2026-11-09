@@ -19,6 +19,23 @@ PUBLIC = {"skill": {"slug": "fixture"}, "version": {"version": VERSION}}
 CLI = """#!/bin/bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$CALL_LOG"
+if [[ -n "${TAKEN:-}" ]]; then
+    version="" previous=""
+    for argument in "$@"; do
+        [[ "$previous" == --version ]] && version="$argument"
+        previous="$argument"
+    done
+    if [[ -z "$version" ]]; then
+        printf '%s\\n' "$AUTO_ERROR" >&2
+        exit 1
+    fi
+    if [[ " $TAKEN " == *" $version "* ]]; then
+        printf 'Error: version %s already exists\\n' "$version" >&2
+        exit 1
+    fi
+    printf '{"slug":"fixture","version":"%s","status":"published"}\\n' "$version"
+    exit 0
+fi
 if [[ "${EXISTING:-false}" == true ]]; then
     printf 'already exists\\n' >&2
     exit 1
@@ -145,6 +162,31 @@ class ClawHubPublicationTests(unittest.TestCase):
                 result, calls, _ = self.run_publication([(status, PUBLIC)], EXISTING="true")
                 self.assertEqual(result.returncode == 0, status == 200, result.stdout + result.stderr)
                 self.assertEqual(len(calls), 1)
+
+    def taken_version_run(self, auto_error, taken):
+        listing = (200, {"skill": {"slug": "fixture"}, "latestVersion": {"version": "1.2.8"}})
+        public = {"skill": {"slug": "fixture"}, "version": {"version": "1.2.11"}}
+        return self.run_publication(
+            [(200, public)], listing_response=listing, INPUT_VERSION="",
+            SOURCE_REF="refs/tags/v0.8.1", TAKEN=taken, AUTO_ERROR=auto_error,
+        )
+
+    def test_auto_version_collision_steps_to_the_next_free_patch(self):
+        for auto_error in ("Error: version 1.2.9 already exists", "Error: already exists"):
+            with self.subTest(auto_error=auto_error):
+                result, calls, _ = self.taken_version_run(auto_error, "1.2.9 1.2.10")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                versions = [call.split("--version ")[1].split()[0] for call in calls if "--version " in call]
+                self.assertEqual(versions[-1], "1.2.11")
+                self.assertNotIn("--version", calls[0])
+                self.assertIn("fixture@1.2.11 (public)", result.stdout)
+
+    def test_auto_version_collision_gives_up_after_bounded_bumps(self):
+        taken = " ".join(f"1.2.{patch}" for patch in range(9, 20))
+        result, calls, _ = self.taken_version_run("Error: version 1.2.9 already exists", taken)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(len(calls), 6)
+        self.assertIn("version conflict", result.stdout)
 
     def test_dry_run_does_not_query_registry(self):
         result, calls, requests = self.run_publication([(403, "hidden")], DRY_RUN="true", PUBLISH_RESULT='{"status":"would-publish"}')
