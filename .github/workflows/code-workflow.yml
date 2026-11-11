@@ -1,8 +1,8 @@
 name: Code Workflow
 
 # SECURITY: build_command, lint_command, test_command, sec_command and
-# generate_command are interpolated directly into shell scripts. Callers control
-# these strings and effectively get arbitrary code execution on the runner with
+# generate_command run as shell on the runner (bash -eo pipefail -c). Callers
+# control these strings and effectively get arbitrary code execution on the runner with
 # whatever secrets/permissions the caller workflow grants. Only call this
 # workflow from trusted repos with branch protection on the workflow files.
 #
@@ -66,6 +66,16 @@ on:
         required: false
         default: "code"
         type: string
+      max_attempts:
+        description: "Attempts per command before the step fails, including the first. Applies to build, lint, test, sec and the generator, so a runner network blip (a DNS failure during an image build, a registry timeout) is retried instead of failing the run. 1 turns retries off."
+        required: false
+        default: 5
+        type: number
+      backoff_seconds:
+        description: "Delay before the second attempt, doubling each retry. With the default 5 attempts that is 30s, 60s, 120s, 240s between them."
+        required: false
+        default: 30
+        type: number
       runs_on:
         description: "Runner to use (e.g. ubuntu-latest, self-hosted)."
         required: false
@@ -106,6 +116,7 @@ jobs:
           echo "test_command: ${{ inputs.test_command }}"
           echo "sec_command: ${{ inputs.sec_command }}"
           echo "generate_command: ${{ inputs.generate_command }}"
+          echo "max_attempts: ${{ inputs.max_attempts }} (backoff ${{ inputs.backoff_seconds }}s, doubling)"
           echo "coverage_file: ${{ inputs.coverage_file }}"
           echo "sarif_file: ${{ inputs.sarif_file }} (category ${{ inputs.sarif_category }})"
           echo "::endgroup::"
@@ -121,27 +132,103 @@ jobs:
       # but a reusable job may only request permissions the CALLER grants, so
       # declaring it breaks every caller that does not grant it with an
       # invalid-workflow error. The SARIF still uploads either way.
+    env:
+      MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+      BACKOFF_SECONDS: ${{ inputs.backoff_seconds }}
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # One helper for every command step. A runner's network can drop for a
+      # moment (DNS during an image build, a registry timeout), and a single
+      # blip used to fail the whole run and any tag release waiting on it.
+      # Each command reaches the helper through the environment, not through
+      # the script text, and runs with bash -eo pipefail -c, so it keeps shell
+      # syntax and stops at its first failing command as before.
+      - name: Prepare retry helper
+        run: |
+          set -euo pipefail
+
+          if ! [[ "${MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::max_attempts must be a positive integer, got '${MAX_ATTEMPTS}'"
+            exit 1
+          fi
+
+          if ! [[ "${BACKOFF_SECONDS}" =~ ^[0-9]+$ ]]; then
+            echo "::error::backoff_seconds must be a non-negative integer, got '${BACKOFF_SECONDS}'"
+            exit 1
+          fi
+
+          cat > "${RUNNER_TEMP}/run-with-retry.sh" <<'HELPER'
+          # run_with_retry LABEL COMMAND: runs COMMAND with bash -eo pipefail
+          # -c, the options GitHub gives a bash step, up to
+          # MAX_ATTEMPTS times, sleeping BACKOFF_SECONDS before the second
+          # attempt and doubling the delay after each failure. Returns the
+          # last attempt's exit code.
+          run_with_retry() {
+            local label="$1"
+            local command="$2"
+            local attempt=1
+            local delay="${BACKOFF_SECONDS}"
+            local status
+
+            while true; do
+              echo "::group::${label}: attempt ${attempt} of ${MAX_ATTEMPTS}"
+              set +e
+              bash -eo pipefail -c "${command}"
+              status=$?
+              set -e
+              echo "::endgroup::"
+
+              if [ "${status}" -eq 0 ]; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+                echo "::error::${label} failed after ${attempt} attempt(s), last exit ${status}"
+                return "${status}"
+              fi
+
+              echo "::warning::${label} failed on attempt ${attempt} with exit ${status}; retrying in ${delay}s"
+              sleep "${delay}"
+              delay=$((delay * 2))
+              attempt=$((attempt + 1))
+            done
+          }
+          HELPER
 
       # build is the gate: if the code does not compile, lint and test fail at the
       # same step anyway, so run it first and skip the rest when it fails.
       - name: Build
         id: build
         if: inputs.build_command != '' && inputs.build_command != '-'
-        run: ${{ inputs.build_command }}
+        env:
+          COMMAND: ${{ inputs.build_command }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/run-with-retry.sh"
+          run_with_retry Build "${COMMAND}"
 
       # Each step below runs when the build was green OR skipped (outcome is not
       # 'failure'), so one check failing does not hide the next, but all skip when
       # the build actually failed. That fails the run fast on the real problem.
       - name: Lint
         if: always() && steps.build.outcome != 'failure' && inputs.lint_command != '' && inputs.lint_command != '-'
-        run: ${{ inputs.lint_command }}
+        env:
+          COMMAND: ${{ inputs.lint_command }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/run-with-retry.sh"
+          run_with_retry Lint "${COMMAND}"
 
       - name: Test
         if: always() && steps.build.outcome != 'failure' && inputs.test_command != '' && inputs.test_command != '-'
-        run: ${{ inputs.test_command }}
+        env:
+          COMMAND: ${{ inputs.test_command }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/run-with-retry.sh"
+          run_with_retry Test "${COMMAND}"
 
       - name: Upload coverage artifact
         if: always() && inputs.coverage_file != '' && hashFiles(inputs.coverage_file) != ''
@@ -154,7 +241,12 @@ jobs:
 
       - name: Security scan
         if: always() && steps.build.outcome != 'failure' && inputs.sec_command != '' && inputs.sec_command != '-'
-        run: ${{ inputs.sec_command }}
+        env:
+          COMMAND: ${{ inputs.sec_command }}
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/run-with-retry.sh"
+          run_with_retry "Security scan" "${COMMAND}"
 
       # Upload whatever SARIF the sec command wrote, even when it gated the build,
       # so findings reach the Security tab either way. continue-on-error: the
@@ -174,10 +266,14 @@ jobs:
       # check is generic and lives here, not duplicated in every project.
       - name: Generate and check drift
         if: always() && steps.build.outcome != 'failure' && inputs.generate_command != '' && inputs.generate_command != '-'
+        env:
+          COMMAND: ${{ inputs.generate_command }}
         run: |
           set -euo pipefail
+          source "${RUNNER_TEMP}/run-with-retry.sh"
 
-          ${{ inputs.generate_command }}
+          # Only the generator retries. Drift is a real result, checked once.
+          run_with_retry Generate "${COMMAND}"
 
           # git status --porcelain rather than git diff --exit-code: diff only
           # sees tracked files, so a generator emitting a NEW uncommitted file

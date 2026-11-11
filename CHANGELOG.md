@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.55.0 (2026-11-11)
+
+- `code-workflow.yml` retries each command with backoff. Build, lint, test, sec and the generator now run up to `max_attempts` times (default 5), waiting `backoff_seconds` before the second attempt and doubling the wait after each failure (default 30, so 30s, 60s, 120s and 240s). A single runner network blip, such as a DNS failure while a test builds a Docker image, used to fail the run and the tag release waiting on it. A real failure still fails the step after its last attempt with that attempt's exit code, and a codegen drift check runs once, after the generator succeeds. Commands now reach the shell through the environment and run with `bash -eo pipefail -c`, the options a bash step already had. Set `max_attempts: 1` to keep the old single-attempt behavior. Callers need no other change.
+- Adds `AGENTS.md` and `.agents/rules/workflows.md`, which describe this repository's layout, checks, and conventions for anyone changing it, with `CLAUDE.md` and `.claude` linking to them. Callers are unaffected.
+
 ## v0.54.5 (2026-11-09)
 
 - `clawhub-publish.yml` no longer fails when the CLI's automatic patch bump collides with a version number that is already taken, for example by an earlier upload that never went public. The step used to report `Cannot verify publication without a valid skill slug and version` because it had no version to check. It now publishes the next free patch explicitly, up to five steps, then fails with a version-conflict error that includes the CLI's message. Explicit and tag-mirrored versions keep the existing visibility check, which now also prints the CLI's message when it fails. Callers need no change.

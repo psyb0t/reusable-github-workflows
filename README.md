@@ -40,7 +40,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 - **Concurrency matches the resource.** A newer push on the same ref supersedes ordinary in-flight work. Scheduled and manual runs use their own group, so they never cancel the push run a tag release waits for. Tag pushes always complete. Badge publishing serializes writers for each caller repository and output branch. Mirroring serializes per caller repository without cancellation because every run carries a real ref that must reach the targets.
 - **Triggered from `push`.** You wire `on: [push]`. The workflow decides whether the ref applies and no-ops otherwise.
 - **Supply-chain discipline on tooling installs.** Exact version pins, an age gate that rejects fresh releases, and `npm install --ignore-scripts`.
-- **Network operations retry with exponential backoff.** Clones, pushes, package installs, and release downloads retry transient failures. Scanners (`govulncheck`, `pip-audit`) do not retry because a finding is a real failure.
+- **Network operations retry with exponential backoff.** Clones, pushes, package installs, and release downloads retry transient failures. Scanners (`govulncheck`, `pip-audit`) do not retry because a finding is a real failure. [`code-workflow.yml`](#code-workflowyml) is the exception: it cannot tell a caller's failing command from a network failure inside it, so it retries every command, scans included, and a real finding still fails the step after the last attempt.
 - **Fail honestly without blocking unrelated work.** An independent job goes red when it did not complete. Do not hide its failure to keep a run green.
 
 ## Workflows
@@ -635,6 +635,7 @@ Chains a repo's own build / lint / test / sec / generate commands. No language, 
 - `sec_command` should write a SARIF to `sarif_file`; the flow uploads it to Security > Code scanning under `sarif_category` (so a repo with both a Go and a Python leg does not overwrite itself). Needs `security-events: write` on the caller job.
 - `generate_command` just runs the generators; the flow then fails on `git status` drift. Ordered last because it rewrites the tree.
 - Set `coverage_file` and the file is uploaded as the artifact a downstream [`create-badges.yml`](#create-badgesyml) job reads.
+- Each command runs up to `max_attempts` times (default 5), waiting `backoff_seconds` before the second attempt and doubling the wait after each failure (30s, 60s, 120s, 240s by default). A runner network blip, such as a DNS failure while a test builds an image, is retried instead of failing the run and any tag release waiting on it. A real failure fails the step after the last attempt with its own exit code. The generate step retries only the generator; drift is checked once. Set `max_attempts: 1` to turn retries off.
 
 **Required caller permission:** the `code` job declares `security-events: write` (for the SARIF upload), and a reusable workflow cannot request more than the caller grants. So the calling job MUST grant `security-events: write` even when it sets no `sec_command`. Omit it and the run fails at startup with no logs.
 
@@ -651,12 +652,14 @@ Chains a repo's own build / lint / test / sec / generate commands. No language, 
 | `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. |
 | `sarif_file` | string | `""` | Path `sec_command` wrote SARIF to. If set, uploaded to the Security tab. |
 | `sarif_category` | string | `"code"` | Code-scanning category, so multiple legs in one repo do not collide. |
+| `max_attempts` | number | `5` | Attempts per command, including the first. `1` turns retries off. |
+| `backoff_seconds` | number | `30` | Wait before the second attempt, doubling after each failure. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |
 | `debug` | boolean | `false` | Print the workflow context. |
 
 ### Security note
 
-`build_command`, `lint_command`, `test_command`, `sec_command` and `generate_command` are interpolated into shell scripts, exactly as in [`go-workflow.yml`](#go-workflowyml). Callers control these strings, which is arbitrary code execution on the runner with whatever secrets and permissions the caller exposes. Only call this from trusted repos with branch protection on the workflow files.
+`build_command`, `lint_command`, `test_command`, `sec_command` and `generate_command` run as shell on the runner, through `bash -eo pipefail -c`, exactly as trusted as in [`go-workflow.yml`](#go-workflowyml). Callers control these strings, which is arbitrary code execution on the runner with whatever secrets and permissions the caller exposes. Only call this from trusted repos with branch protection on the workflow files.
 
 ### Example
 
