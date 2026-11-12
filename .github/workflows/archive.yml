@@ -185,6 +185,23 @@ jobs:
             echo "::warning::capture_outlinks is on but no archive.org keys were provided; outlinks will NOT be captured. Set archiveorg_access_key and archiveorg_secret_key, or turn the input off to silence this."
           fi
 
+          report_wayback_refusal() {
+            local refusal="$1" url="$2" body="$3"
+
+            if [ "${refusal}" = "error:too-many-daily-captures-host" ]; then
+              echo "::warning::${url}: Wayback's host daily capture cap was hit; nothing was archived for this URL. Leaving it to a later scheduled run."
+              return 0
+            fi
+
+            if [ "${refusal}" = "error:too-many-daily-captures" ]; then
+              echo "::notice::${url} already hit Wayback's per-URL daily capture cap; today's snapshots stand"
+              return 0
+            fi
+
+            echo "::warning::Wayback accepted the request but returned no job: ${body}"
+            return 1
+          }
+
           # Returns 0 as soon as a save is confirmed. Retries only what is worth
           # retrying: a 429, a 404, a 5xx, or a timeout. Any other 4xx is the
           # archive telling us the URL itself is unacceptable, and waiting longer
@@ -235,20 +252,9 @@ jobs:
                     local refusal
                     refusal=$(printf '%s' "${body}" | jq -r '.status_ext // empty' 2>/dev/null || true)
 
-                    # Save Page Now caps captures PER URL PER DAY (5 at the time
-                    # of writing) separately from the account's daily quota.
-                    # Hitting it means this page has already been archived
-                    # several times today, which is the outcome this job wants --
-                    # failing the run over it would report "not archived" about a
-                    # URL that is, repeatedly.
-                    if [ "${refusal}" = "error:too-many-daily-captures" ]; then
-                      echo "::notice::${url} already hit Wayback's per-URL daily capture cap; today's snapshots stand"
-
+                    if report_wayback_refusal "${refusal}" "${url}" "${body}"; then
                       return 0
                     fi
-
-                    # Any other 200 without a job_id is a refusal in disguise.
-                    echo "::warning::Wayback accepted the request but returned no job: ${body}"
 
                     return 1
                   fi

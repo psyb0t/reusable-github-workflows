@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.55.1 (2026-11-12)
+
+- `archive.yml` stops attempts for a Wayback `error:too-many-daily-captures-host` refusal and warns that the host's daily cap was hit and nothing was archived, leaving capture to a later scheduled run without failing `fail_on_error`. The per-URL cap still produces a success notice, and other refusals still fail. Callers need no change.
+- `git-mirror.yml` stops retrying Codeberg pushes rejected with Forgejo or Gitea quota exhaustion and fails immediately with an error naming the platform and asking for account storage to be freed or the quota raised. Ordinary push failures still retry with backoff. Callers need no change.
+
 ## v0.55.0 (2026-11-11)
 
 - `code-workflow.yml` retries each command with backoff. Build, lint, test, sec and the generator now run up to `max_attempts` times (default 5), waiting `backoff_seconds` before the second attempt and doubling the wait after each failure (default 30, so 30s, 60s, 120s and 240s). A single runner network blip, such as a DNS failure while a test builds a Docker image, used to fail the run and the tag release waiting on it. A real failure still fails the step after its last attempt with that attempt's exit code, and a codegen drift check runs once, after the generator succeeds. Commands now reach the shell through the environment and run with `bash -eo pipefail -c`, the options a bash step already had. Set `max_attempts: 1` to keep the old single-attempt behavior. Callers need no other change.

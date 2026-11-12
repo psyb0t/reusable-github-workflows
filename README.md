@@ -1081,6 +1081,8 @@ The synced description gets `description_prefix` and is capped at `description_m
 
 Pushing a commit and its tag together starts two runs close together. Runs are serialized per caller repository without `cancel-in-progress` because each ref must reach the targets. A failed create re-checks for an existing target repository before failing.
 
+**Codeberg storage quota rejections fail immediately.** A push reporting `Forgejo: Quota exceeded` or `Gitea: Quota exceeded` stops retries and names the platform in an error. Free account storage or have the quota raised before retrying. Ordinary push failures still retry with backoff.
+
 Platform differences that aren't obvious:
 
 | Platform | Description | Topics | Project URL | Notes |
@@ -1249,7 +1251,7 @@ reported as a warning without turning the caller's release pipeline red. Call
 `archive.yml` directly with its default when an archive confirmation is a gate
 for your own workflow.
 
-**Save Page Now caps captures per URL per day.** A jobless 200 with `status_ext=error:too-many-daily-captures` means the existing captures satisfy the request. Other jobless 200 responses fail.
+**Save Page Now caps captures per URL and per host per day.** A jobless 200 with `status_ext=error:too-many-daily-captures` means the existing captures satisfy the request and produces a notice. The exact `error:too-many-daily-captures-host` refusal stops attempts for that URL with a warning that the host's daily cap was hit and nothing was archived. It does not count as a failure for `fail_on_error`; a later scheduled run can capture the page. Other jobless 200 responses still fail.
 
 **Wayback is slow.** `url_timeout_seconds` defaults to 180. A timeout retries because Wayback can complete after the client gives up.
 

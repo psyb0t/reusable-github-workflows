@@ -216,23 +216,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The clone and the push are pure network and fail transiently:
-          # registry 502s, TLS resets, a brief upstream outage. Losing one costs
-          # the entire mirror for that run, so they get retried with exponential
-          # backoff. A genuinely bad token also retries -- it fails the same way
-          # from here -- which just means a real auth failure takes
-          # max_attempts tries instead of one. That is cheap next to dropping a
-          # mirror on a blip.
+          report_push_quota() {
+            local output="$1" platform
+
+            for platform in Forgejo Gitea; do
+              if grep -Fq "remote: ${platform}: Quota exceeded" <<< "${output}"; then
+                echo "::error::Codeberg (${platform}): the account's storage quota is exhausted; free space or have the quota raised before retrying." >&2
+                return 0
+              fi
+            done
+
+            return 1
+          }
+
+          # Quota exhaustion requires account changes; other failures retain
+          # exponential backoff for transient network outages.
           retry() {
-            local attempt=1 delay
+            local attempt=1 delay output
 
             while true; do
-              if "$@"; then
+              if output=$("$@" 2>&1); then
+                printf '%s\n' "${output}"
                 return 0
               fi
 
+              printf '%s\n' "${output}" >&2
+              if [ "${1:-}" = "git" ] && [ "${2:-}" = "push" ] && report_push_quota "${output}"; then
+                return 1
+              fi
+
               if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
-                echo "::error::gave up after ${MAX_ATTEMPTS} attempt(s): $*" >&2
+                echo "::error::gave up after ${MAX_ATTEMPTS} attempt(s)" >&2
 
                 return 1
               fi
