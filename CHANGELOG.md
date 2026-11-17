@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.56.0 (2026-11-17)
+
+- Adds `apify-publish.yml`, which pushes an Apify Actor from the caller's `.actor/actor.json` and waits for its build. The Actor version is MAJOR.MINOR of the release tag unless `version` is set. With `base_image`, the Actor Dockerfile's `FROM` line for that image is pinned to the release tag and its digest before the push, so the Actor builds from exactly the promoted image. The job fails unless the build succeeds; pushes that failed before a build existed retry with backoff, and a failed build is never pushed again. The Apify CLI is pinned with `cli_version`. Callers opt in with one job and an `apify_token` secret.
+- `regen-and-update-repo.yml` closes its failure issues after a successful scheduled regeneration, including runs with no changes. Recovery links the successful run and leaves issues for newer failures open. Callers need no change.
+
 ## v0.55.1 (2026-11-12)
 
 - `archive.yml` stops attempts for a Wayback `error:too-many-daily-captures-host` refusal and warns that the host's daily cap was hit and nothing was archived, leaving capture to a later scheduled run without failing `fail_on_error`. The per-URL cap still produces a success notice, and other refusals still fail. Callers need no change.

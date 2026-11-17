@@ -1,0 +1,184 @@
+name: Apify Publish Workflow
+
+# Pushes an Apify Actor from the caller's repository and waits for its build:
+#   * reads `.actor/actor.json` under `actor_dir`;
+#   * sets the Actor version to MAJOR.MINOR of the release tag (v3.7.0 -> 3.7),
+#     or to `version` when given;
+#   * when `base_image` is set, pins the Actor Dockerfile's FROM line for that
+#     image to `base_image:<tag>@<digest>`, resolved at run time, so an Actor
+#     built FROM the caller's published image uses exactly the promoted image;
+#   * runs `apify push`, then `apify builds wait`, and fails unless the build
+#     SUCCEEDED. A push that created a build is never repeated; only pushes
+#     that failed before a build existed are retried with backoff.
+#
+# Call it after the image is published, e.g. `needs: [docker-promote]` or
+# `needs: [release]` on tag pushes. The Apify CLI is pinned with `cli_version`.
+#
+# Example caller:
+#
+#   publish-to-apify:
+#     needs: [release]
+#     if: startsWith(github.ref, 'refs/tags/')
+#     permissions:
+#       contents: read
+#     uses: psyb0t/reusable-github-workflows/.github/workflows/apify-publish.yml@master
+#     with:
+#       base_image: psyb0t/stealthy-auto-browse
+#     secrets:
+#       apify_token: ${{ secrets.APIFY_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      actor_dir:
+        description: "Directory that holds .actor/actor.json"
+        required: false
+        type: string
+        default: "."
+
+      version:
+        description: "Actor version (MAJOR.MINOR). Empty = MAJOR.MINOR of the release tag."
+        required: false
+        type: string
+        default: ""
+
+      build_tag:
+        description: "Build tag applied to the successful build"
+        required: false
+        type: string
+        default: "latest"
+
+      base_image:
+        description: "Image whose FROM line in the Actor Dockerfile is pinned to <tag>@<digest> before the push, e.g. psyb0t/app. Empty = leave the Dockerfile as it is."
+        required: false
+        type: string
+        default: ""
+
+      base_image_tag:
+        description: "Tag of base_image to pin. Empty = the release tag."
+        required: false
+        type: string
+        default: ""
+
+      tag:
+        description: "Release tag (e.g. v1.2.3). Empty = the triggering tag ref. Set it when the caller pushed the tag itself."
+        required: false
+        type: string
+        default: ""
+
+      cli_version:
+        description: "apify-cli version to install from npm"
+        required: false
+        type: string
+        default: "1.11.0"
+
+      node_version:
+        description: "Node.js major version for the CLI"
+        required: false
+        type: string
+        default: "22"
+
+      wait_seconds:
+        description: "Seconds to wait for the Actor build before failing"
+        required: false
+        type: number
+        default: 3600
+
+      max_attempts:
+        description: "Push attempts, including the first. Only pushes that created no build are retried."
+        required: false
+        type: number
+        default: 4
+
+      backoff_seconds:
+        description: "Wait before the second push attempt, doubled after each failure"
+        required: false
+        type: number
+        default: 30
+
+      runs_on:
+        description: "Runner to use"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    secrets:
+      apify_token:
+        description: "Apify API token with permission to push the Actor"
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code (read-only)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Empty keeps checkout's default (the triggering ref).
+          ref: ${{ inputs.tag }}
+          # No token in .git/config of the directory `apify push` uploads.
+          persist-credentials: false
+
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: .reusable-workflow-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      # actions/checkout only writes inside the workspace; move the tools out
+      # so `apify push` never uploads them with the Actor's files.
+      - name: Move reusable workflow tools out of the workspace
+        run: mv .reusable-workflow-tools "${RUNNER_TEMP}/reusable-workflow-tools"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install apify-cli
+        env:
+          CLI_VERSION: ${{ inputs.cli_version }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF_SECONDS: ${{ inputs.backoff_seconds }}
+        run: |
+          set -euo pipefail
+          delay="${BACKOFF_SECONDS}"
+          for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1)); do
+            if npm install -g "apify-cli@${CLI_VERSION}" --ignore-scripts; then
+              apify --version
+              exit 0
+            fi
+            if ((attempt < MAX_ATTEMPTS)); then
+              echo "install attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+              delay=$((delay * 2))
+            fi
+          done
+          echo "::error::npm install apify-cli@${CLI_VERSION} failed after ${MAX_ATTEMPTS} attempt(s)"
+          exit 1
+
+      - name: Push the Actor and wait for its build
+        env:
+          APIFY_TOKEN: ${{ secrets.apify_token }}
+          APIFY_CLI_DISABLE_TELEMETRY: "1"
+          ACTOR_DIR: ${{ inputs.actor_dir }}
+          ACTOR_VERSION: ${{ inputs.version }}
+          BUILD_TAG: ${{ inputs.build_tag }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+          BASE_IMAGE_TAG: ${{ inputs.base_image_tag }}
+          RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name || '') }}
+          WAIT_SECONDS: ${{ inputs.wait_seconds }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF_SECONDS: ${{ inputs.backoff_seconds }}
+        run: bash "${RUNNER_TEMP}/reusable-workflow-tools/scripts/apify-publish.sh"

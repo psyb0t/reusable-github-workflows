@@ -45,6 +45,7 @@ name: Regen And Update Repo Workflow
 #                  commit, annotated tag (unless tag: false), atomic push with
 #                  GH_PAT when set, GITHUB_TOKEN otherwise
 #   report-failure scheduled runs only: open or update one issue
+#   report-recovery successful scheduled runs: close the recovered failure issue
 #
 # Example caller:
 #
@@ -779,3 +780,35 @@ jobs:
             gh issue create --title "${TITLE}" --body "${body}"
             echo "Opened a failure issue." >>"${GITHUB_STEP_SUMMARY}"
           fi
+
+  report-recovery:
+    name: Report recovery
+    needs: [regen, review, commit]
+    if: >-
+      always()
+      && !cancelled()
+      && github.event_name == 'schedule'
+      && needs.regen.result == 'success'
+      && (needs.commit.result == 'success'
+          || (needs.regen.outputs.changed == 'false' && needs.commit.result == 'skipped'))
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout reusable workflow tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: .reusable-workflow-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Close recovered failure issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_PREFIX: ${{ github.server_url }}/${{ github.repository }}/actions/runs/
+          TITLE: ${{ inputs.failure_issue_title }}
+        run: bash .reusable-workflow-tools/scripts/regen-report-recovery.sh

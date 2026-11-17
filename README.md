@@ -25,6 +25,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [clawhub-publish.yml](#clawhub-publishyml)
   - [regen-and-update-repo.yml](#regen-and-update-repoyml)
   - [mcp-registry-publish.yml](#mcp-registry-publishyml)
+  - [apify-publish.yml](#apify-publishyml)
   - [create-badges.yml](#create-badgesyml)
   - [git-mirror.yml](#git-mirroryml)
   - [issue-pull.yml](#issue-pullyml)
@@ -58,6 +59,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
 | [`regen-and-update-repo.yml`](#regen-and-update-repoyml) | Run a generator; if the tree changed, run checks, have Claude fix failures, describe, classify and review the change, then commit and push (and tag, optionally). |
 | [`mcp-registry-publish.yml`](#mcp-registry-publishyml) | Publish a `server.json` to the official [MCP Registry](https://registry.modelcontextprotocol.io) on tag, secretless via GitHub OIDC. |
+| [`apify-publish.yml`](#apify-publishyml) | Push an [Apify](https://apify.com) Actor on tag, pin its `FROM` image to the promoted digest, and fail unless the Actor build succeeds. |
 | [`create-badges.yml`](#create-badgesyml) | Self-render coverage / license / version / imported-by SVG badges (no third-party service) and commit them to an orphan `badges` branch. |
 | [`git-mirror.yml`](#git-mirroryml) | Push-mirror every branch + tag to Codeberg / GitLab / Gitee, creating the repo and syncing description + topics. |
 | [`issue-pull.yml`](#issue-pullyml) | Copy mirror issues and replies into GitHub with linked source identities, track source edits and state changes, and preserve confidential GitLab issues as generic source links. |
@@ -823,6 +825,7 @@ The workflow does not publish anything itself. With the `GH_PAT` secret set, its
 | `review` | `contents: read` | Runs `psyb0t/docker-claudebox@master` with `regen-context` mounted read-only and uploads its output directory as `regen-review`. The action mounts the runner's Docker socket. Claude writes `changelog.md`, `subject.txt`, `change-kind.txt`, `bump-reason.txt` and `verdict.txt`. |
 | `commit` | `contents: write` | Applies the patch three-way to the branch's current tip, so commits pushed while `regen` ran are kept, checks the review verdict, validates Claude's files and commits as `github-actions[bot]`. With `tag: true` it also computes the version, prepends the changelog entry, bumps `version_files` and creates an annotated tag (`vX.Y.Z`, blank line, the entry). It pushes the branch, and the tag when there is one, with one `git push --atomic`, using `GH_PAT` when set. |
 | `report-failure` | `issues: write` | Scheduled runs only, when `regen` or `commit` failed: comments on the open issue titled `failure_issue_title`, or opens it. |
+| `report-recovery` | `issues: write` | Successful scheduled runs close matching failure issues created by the workflow bot and link the recovery run, including runs with no generated changes. Issues reporting a newer failed run stay open. |
 
 **Tagging.** `tag` defaults to `false`: the commit carries Claude's subject line and the changelog text as its body, and nothing else changes. With `tag: true`, the workflow computes the version, not Claude. It reads the highest `vX.Y.Z` tag and maps Claude's `change-kind.txt`:
 
@@ -953,6 +956,57 @@ jobs:
       id-token: write   # secretless OIDC auth to the registry
       contents: read
     uses: psyb0t/reusable-github-workflows/.github/workflows/mcp-registry-publish.yml@master
+```
+
+## apify-publish.yml
+
+Pushes an [Apify](https://apify.com) Actor from the caller repository and waits for its build. Call it on tag pushes after the image the Actor builds from is published, for example with `needs: [release]`.
+
+The Actor is defined by `.actor/actor.json` under `actor_dir`. Its version is MAJOR.MINOR of the release tag (`v3.7.0` becomes `3.7`) unless `version` is set. The build gets `build_tag`, `latest` by default.
+
+With `base_image` set, the workflow resolves the digest of `base_image:<tag>` and rewrites the Actor Dockerfile's `FROM` line for that image to `base_image:<tag>@<digest>` before the push. The Dockerfile is the one Apify builds: the `dockerfile` field of `actor.json`, else `.actor/Dockerfile`, else `Dockerfile`. The tag is the release tag unless `base_image_tag` is set. A Dockerfile with no `FROM` line for `base_image` fails the job. The rewrite happens in the runner's checkout only; the repository is not changed.
+
+The job runs `apify push` and then `apify builds wait`, and it fails unless the build ends `SUCCEEDED`, so a green run means the Actor built. A push that fails before a build exists retries `max_attempts` times with backoff. A push that created a build is never repeated, so a failed build is not rebuilt; its last 100 log lines are printed. The checkout keeps no Git credentials, and the reusable workflow tools are moved out of the workspace, so neither reaches the files `apify push` uploads.
+
+`apify-cli` is pinned with `cli_version` (default `1.11.0`) and installed with `npm install -g … --ignore-scripts`. Unlike the other installs here, there is no release-age gate in the run; the default pin was chosen past the age window, and a caller that sets its own version owns that choice.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `actor_dir` | string | `"."` | Directory that holds `.actor/actor.json`. |
+| `version` | string | `""` | Actor version (MAJOR.MINOR). Empty = MAJOR.MINOR of the release tag. |
+| `build_tag` | string | `"latest"` | Build tag applied to the successful build. |
+| `base_image` | string | `""` | Image whose `FROM` line is pinned to `<tag>@<digest>` before the push, e.g. `psyb0t/app`. Empty = leave the Dockerfile as it is. |
+| `base_image_tag` | string | `""` | Tag of `base_image` to pin. Empty = the release tag. |
+| `tag` | string | `""` | Release tag (e.g. `v1.2.3`). Empty = the triggering tag ref. Set it when the caller pushed the tag itself with `GITHUB_TOKEN`, which starts no new run. |
+| `cli_version` | string | `"1.11.0"` | `apify-cli` version to install from npm. |
+| `node_version` | string | `"22"` | Node.js major version for the CLI. |
+| `wait_seconds` | number | `3600` | Seconds to wait for the Actor build before failing. |
+| `max_attempts` | number | `4` | Push attempts, including the first. Only pushes that created no build are retried. |
+| `backoff_seconds` | number | `30` | Wait before the second push attempt, doubled after each failure. |
+| `runs_on` | string | `"ubuntu-latest"` | Runner label. |
+
+### Secrets
+
+| Secret | Required | Description |
+|---|---|---|
+| `apify_token` | yes | Apify API token with permission to push the Actor. |
+
+### Example
+
+```yaml
+jobs:
+  publish-to-apify:
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/apify-publish.yml@master
+    with:
+      base_image: psyb0t/stealthy-auto-browse
+    secrets:
+      apify_token: ${{ secrets.APIFY_TOKEN }}
 ```
 
 ## create-badges.yml
