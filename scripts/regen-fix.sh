@@ -28,7 +28,7 @@ readonly MAX_NOTES_BYTES=4000
 # Added lines that switch a check off instead of fixing what it reports.
 # Added lines that credit an AI tool. Commits carry no such attribution.
 readonly ATTRIBUTION_RE='co-authored-by|claude[ -]code|claude\.ai|anthropic\.com|(generated|written|created|authored) (with|by) (claude|an? ai|ai)|claude-session'
-readonly SUPPRESSION_RE='t\.Skip(Now|f)?\(|//[[:space:]]*nolint|nosemgrep|gitleaks:allow|#nosec|pytest\.mark\.skip|#[[:space:]]*noqa|eslint-disable|@ts-ignore|@ts-nocheck|shellcheck[[:space:]]+disable'
+readonly SUPPRESSION_RE='t\.Skip(Now|f)?\(|//[[:space:]]*nolint|nosemgrep|gitleaks:allow|#[[:space:]]*nosec|pytest\.mark\.skip|#[[:space:]]*noqa|eslint-disable|@ts-ignore|@ts-nocheck|shellcheck[[:space:]]+disable'
 
 # shellcheck source=scripts/regen-prompt.sh
 source "${BASH_SOURCE[0]%/*}/regen-prompt.sh"
@@ -62,7 +62,8 @@ require_env() {
 protected_globs() {
 	local file
 	{
-		printf '.github/*\n'
+		printf '%s\n' '.github/*' '.gitleaks*' '.semgrep*' '.golangci*' \
+			'.bandit*' '.eslintrc*' 'eslint.config.*' 'scripts/sec.sh' 'scripts/lint.sh'
 		[[ -n "${CHANGELOG_PATH:-}" ]] && printf '%s\n' "${CHANGELOG_PATH}"
 		for file in ${VERSION_FILES:-}; do
 			printf '%s\n' "${file}"
@@ -158,7 +159,9 @@ write_prompt() {
 		sync_note=$(<"${PROMPT_TEMPLATE_DIR}/regen-fix-sync.md")
 	fi
 	render_prompt regen-fix.md \
-		"CHECK_COMMANDS=${CHECK_COMMANDS}" \
+		"CHECK_COMMANDS=${CHECK_COMMANDS:-}" \
+		"GENERATE_COMMAND=${GENERATE_COMMAND:-}" \
+		"OFFICIAL_SOURCE_URLS=${OFFICIAL_SOURCE_URLS:-'(none)'}" \
 		"ATTEMPT=${ATTEMPT}" \
 		"MAX_ATTEMPTS=${MAX_ATTEMPTS}" \
 		"SYNC_NOTE=${sync_note}" \
@@ -203,10 +206,18 @@ guard() {
 		exit 1
 	fi
 	pre="$(cat "${dir}/pre-tree")"
+	# Compare all ordinary repairs with the same baseline. Otherwise a rejected
+	# suppression could survive in a later attempt that changed nothing else.
+	if ((ATTEMPT > 1 && ATTEMPT <= 3)); then
+		pre="$(cat "${FIX_DIR}/attempt-1/pre-tree")"
+	fi
 	restore_claude_md "${dir}"
 	post="$(tree_state)"
 
 	notes="${RESULT:-}"
+	if [[ -z "${notes// /}" && -f "${FIX_DIR}/notes-${ATTEMPT}.md" ]]; then
+		notes="$(cat "${FIX_DIR}/notes-${ATTEMPT}.md")"
+	fi
 	notes="${notes:0:${MAX_NOTES_BYTES}}"
 	[[ -n "${notes// /}" ]] || notes="(no summary given)"
 	printf '%s\n' "${notes}" >"${FIX_DIR}/notes-${ATTEMPT}.md"
@@ -241,8 +252,7 @@ guard() {
 		exit 1
 	fi
 
-	# Vendored and generated files carry upstream directives; only check
-	# hand-written files.
+	# A generated header is model-controlled and is not an exemption.
 	added="$(git diff --unified=0 "${pre}" "${post}" -- . ':(exclude)vendor/' |
 		awk '
 			/^\+\+\+ / { file = substr($0, 7); next }
@@ -251,13 +261,12 @@ guard() {
 	if [[ -n "${added}" ]]; then
 		while IFS= read -r line; do
 			file="${line%%: *}"
-			if [[ -f "${file}" ]] && head -n 5 "${file}" | grep -q 'Code generated .* DO NOT EDIT'; then
-				continue
-			fi
 			echo "::error::Fix attempt ${ATTEMPT} added a check suppression in ${file}"
 			exit 1
 		done <<<"${added}"
 	fi
+
+	guard_urls "${pre}" "${post}"
 
 	added="$(git diff --unified=0 "${pre}" "${post}" -- . ':(exclude)vendor/' |
 		grep -E '^\+[^+]' | grep -iE "${ATTRIBUTION_RE}" || true)"
@@ -272,11 +281,31 @@ guard() {
 	log INFO "fix attempt passed the guard attempt=${ATTEMPT} files=$(wc -l <<<"${changed}")"
 }
 
+# URL trust comes from the checkout or the caller, never from the repair.
+guard_urls() {
+	local pre=$1 post=$2 url baseline added
+	local url_pattern="https?://[^[:space:]\"'<>\\)]+"
+	baseline="${FIX_DIR}/attempt-${ATTEMPT}/baseline-urls.txt"
+	added="${FIX_DIR}/attempt-${ATTEMPT}/added-urls.txt"
+	# grep's no-match status is expected for repositories without literal URLs.
+	git grep -h -I -E -o "${url_pattern}" "${pre}" -- . ':!vendor' >"${baseline}" || [[ $? == 1 ]]
+	printf '%s\n' "${OFFICIAL_SOURCE_URLS:-}" >>"${baseline}"
+	git diff --unified=0 "${pre}" "${post}" -- . ':!vendor' |
+		awk '/^\+[^+]/ { print substr($0, 2) }' >"${added}"
+	# A missing URL match is normal, not a detector failure.
+	grep -Eo "${url_pattern}" "${added}" >"${added}.urls" || [[ $? == 1 ]]
+	while IFS= read -r url; do
+		if ! grep -Fxq -- "${url}" "${baseline}"; then
+			echo "::error::Fix attempt ${ATTEMPT} introduced an unapproved URL. Use an existing official source or report the blocker; the caller must approve a new official URL."
+			return 1
+		fi
+	done <"${added}.urls"
+}
+
 main() {
 	require_env FIX_DIR
 	case "${1:-}" in
 		prepare)
-			require_env CHECK_COMMANDS
 			require_env MAX_ATTEMPTS
 			prepare
 			;;

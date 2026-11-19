@@ -49,3 +49,8 @@ Write exactly these five files in the output directory and nothing else:
    test, hides an error, hard-codes around a failure, removes public API the
    upstream spec still has, edits files unrelated to the regeneration, or adds
    any mention of AI tools or authorship.
+   Verify that any changed API or specification source is official and
+   provider-controlled. Block invented endpoints, unofficial mirrors, stale
+   spec fallbacks and URL changes without provider evidence. Caller approval
+   of a URL does not replace that provenance check. A security fix must resolve
+   the finding, not disable a scanner or remove supported API behavior.

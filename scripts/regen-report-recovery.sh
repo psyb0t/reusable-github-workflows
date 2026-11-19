@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Close the failure issues report-failure opened once a scheduled regeneration
+# Close the failure issues report-failure opened once regeneration and validation
 # succeeds again. Called by regen-and-update-repo.yml's report-recovery job.
 #
 # An issue is closed only when the newest failed run it reports, in its body
@@ -15,6 +15,7 @@ set -euo pipefail
 
 readonly BOT_LOGIN='github-actions[bot]'
 readonly FAILURE_PREFIX='The scheduled regeneration failed in this run: '
+readonly VALIDATION_FAILURE_PREFIX='Regeneration or validation failed in this run: '
 
 log() {
 	local level=$1
@@ -44,10 +45,11 @@ require_env() {
 # bot opened under TITLE.
 failure_issues() {
 	"${GH_BIN}" api --paginate --slurp "repos/${GH_REPO}/issues?state=open&per_page=100" |
-		jq -c --arg title "${TITLE}" --arg bot "${BOT_LOGIN}" --arg prefix "${FAILURE_PREFIX}" '
+		jq -c --arg title "${TITLE}" --arg bot "${BOT_LOGIN}" --arg prefix "${FAILURE_PREFIX}" \
+			--arg validation "${VALIDATION_FAILURE_PREFIX}" '
 			.[][]
 			| select(.pull_request == null and .title == $title and .user.login == $bot)
-			| select((.body // "") | startswith($prefix))
+			| select((.body // "") | startswith($prefix) or startswith($validation))
 			| {number, body}'
 }
 
@@ -58,10 +60,11 @@ latest_failure_run() {
 
 	"${GH_BIN}" api --paginate --slurp "repos/${GH_REPO}/issues/${number}/comments?per_page=100" |
 		jq -r --arg body "${body}" --arg prefix "${RUN_PREFIX}" --arg bot "${BOT_LOGIN}" \
-			--arg failure "${FAILURE_PREFIX}" '
+			--arg failure "${FAILURE_PREFIX}" --arg validation "${VALIDATION_FAILURE_PREFIX}" '
 			[$body, (.[][] | select(.user.login == $bot) | (.body // ""))]
-			| map(select(startswith($failure))
+			| map(select(startswith($failure) or startswith($validation))
 				| ltrimstr($failure)
+				| ltrimstr($validation)
 				| split("\n")[0]
 				| select(startswith($prefix)) | ltrimstr($prefix)
 				| select(test("^[0-9]+$")) | tonumber)
@@ -87,7 +90,7 @@ main() {
 			continue
 		fi
 		"${GH_BIN}" issue close "${number}" --reason completed \
-			--comment "Scheduled regeneration recovered: ${RUN_PREFIX}${RUN_ID}"
+			--comment "Regeneration and validation recovered: ${RUN_PREFIX}${RUN_ID}"
 		log INFO "closed recovered failure issue number=${number}"
 		closed=$((closed + 1))
 		if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then

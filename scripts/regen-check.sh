@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Check step of regen-and-update-repo.yml. Runs CHECK_COMMANDS once against the
-# working tree, keeps the full output as FIX_DIR/check-ATTEMPT.log and writes
-# `passed=true|false` to GITHUB_OUTPUT.
+# Validation step of regen-and-update-repo.yml. Runs generation, the repair
+# guard when configured, and CHECK_COMMANDS, keeping FIX_DIR/check-ATTEMPT.log.
+# Writes `passed=true|false` to GITHUB_OUTPUT.
 #
 # A failing check is a normal result here (the fix loop reads the log), so the
-# script exits 0 either way. It exits non-zero only when the check commands
+# script exits 0 either way. It exits non-zero when the check commands
 # changed the working tree, because checks must be read-only.
 set -euo pipefail
 
@@ -46,16 +46,37 @@ tree_state() {
 main() {
 	local before after status check_log
 
-	require_env CHECK_COMMANDS
 	require_env FIX_DIR
 	require_env ATTEMPT
 
 	mkdir -p "${FIX_DIR}"
 	check_log="${FIX_DIR}/check-${ATTEMPT}.log"
 
-	before="$(tree_state)"
+	# A rejected model patch cannot become acceptable merely because tests pass.
+	if [[ -n "${GUARD_OUTCOME:-}" && "${GUARD_OUTCOME}" != success ]]; then
+		{
+			printf 'Repair rejected. Remove the prohibited changes and fix the original cause.\n'
+			cat "${FIX_DIR}/guard-${ATTEMPT}.log"
+			printf '\nOriginal failure:\n'
+			cat "${FIX_DIR}/check-0.log"
+		} >"${check_log}"
+		printf 'passed=false\n' >>"${GITHUB_OUTPUT}"
+		log WARN "guard rejected repair attempt=${ATTEMPT}"
+		return 0
+	fi
+
+	: >"${check_log}"
 	status=0
-	bash -euo pipefail -c "${CHECK_COMMANDS}" 2>&1 | tee "${check_log}" || status=$?
+	if [[ -n "${GENERATE_COMMAND:-}" && "${GENERATE_COMMAND}" != - ]]; then
+		bash -euo pipefail -c "${GENERATE_COMMAND}" 2>&1 | tee -a "${check_log}" || status=$?
+	fi
+	if ((status == 0)) && [[ -n "${GUARD_SCRIPT:-}" ]]; then
+		bash "${GUARD_SCRIPT}" guard 2>&1 | tee -a "${check_log}" "${FIX_DIR}/guard-${ATTEMPT}.log" || status=$?
+	fi
+	before="$(tree_state)"
+	if ((status == 0)) && [[ -n "${CHECK_COMMANDS:-}" && "${CHECK_COMMANDS}" != - ]]; then
+		bash -euo pipefail -c "${CHECK_COMMANDS}" 2>&1 | tee -a "${check_log}" || status=$?
+	fi
 	after="$(tree_state)"
 
 	if [[ "${before}" != "${after}" ]]; then

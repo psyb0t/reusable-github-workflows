@@ -4,6 +4,13 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.57.0 (2026-11-19)
+
+- Behavior change: regeneration runs now validate unchanged trees and route generation, lint, test and security failures into the existing three-attempt repair loop. An unchanged spec no longer skips configured checks. Callers need no changes unless they explicitly disabled repairs or omitted a check command.
+- Rejected repair attempts feed their guard failure back to the next attempt. Suppressions remain rejected across attempts and after regeneration, including in generated files. Scanner configuration and security/lint scripts are always protected.
+- Repairs cannot introduce new literal HTTP(S) URLs unless they already exist in the repair baseline or are explicitly approved through the new `official_source_urls` input. Missing official sources remain failures instead of being replaced with unofficial mirrors.
+- Manual regeneration failures now open or update the same failure issue as scheduled runs, and successful manual validation can close it.
+
 ## v0.56.0 (2026-11-17)
 
 - Adds `apify-publish.yml`, which pushes an Apify Actor from the caller's `.actor/actor.json` and waits for its build. The Actor version is MAJOR.MINOR of the release tag unless `version` is set. With `base_image`, the Actor Dockerfile's `FROM` line for that image is pinned to the release tag and its digest before the push, so the Actor builds from exactly the promoted image. The job fails unless the build succeeds; pushes that failed before a build existed retry with backoff, and a failed build is never pushed again. The Apify CLI is pinned with `cli_version`. Callers opt in with one job and an `apify_token` secret.

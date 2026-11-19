@@ -1,7 +1,8 @@
-An automated job ran this repository's code generator. The repository's checks
-(`{{CHECK_COMMANDS}}`) now fail. Your current working directory is the
-repository checkout with the regenerated changes applied. Fix the repository so
-the checks pass. This is attempt {{ATTEMPT}} of {{MAX_ATTEMPTS}}.
+An automated validation failed in this repository. Fix the root cause so both
+generation (`{{GENERATE_COMMAND}}`) and checks (`{{CHECK_COMMANDS}}`) pass.
+Either command may be disabled by an empty string or "-". The failure may be
+generation, dependencies, compilation, lint, tests, security scanning or a
+rejected prior repair. This is attempt {{ATTEMPT}} of {{MAX_ATTEMPTS}}.
 {{SYNC_NOTE}}
 
 Context files under /context:
@@ -33,6 +34,18 @@ How to fix:
   nosemgrep, gitleaks:allow, #nosec, noqa, eslint-disable, shellcheck
   disable). Never delete or loosen a test to make it pass. The workflow
   rejects these.
+- Security findings require a real fix, such as a patched toolchain or
+  dependency. Do not disable scanners, omit checks, reduce their scope, lower
+  thresholds, remove functionality or edit schemas to hide a finding. Generated
+  headers do not exempt a suppression. Preserve the upstream API contract.
+- Only use official provider-controlled API and specification sources. Never
+  invent a URL or substitute a third-party mirror. For a new URL, verify its
+  provenance in the provider's own documentation or repository. The guard also
+  requires that exact URL to be pre-approved by the caller; the approved
+  additions are listed below. Existing repository URLs remain permitted.
+  If no official source is available, or the necessary replacement is not
+  approved, stop with a concise blocker and evidence for the failure issue.
+  Do not fake successful generation by reusing stale output or a cached spec.
 - Never edit the protected paths listed at the end of this task. The
   workflow rejects any change to them, including the changelog and version
   files, which it writes itself.
@@ -47,3 +60,6 @@ say what blocks it.
 
 Protected paths (globs, * also matches across directories):
 {{PROTECTED_PATHS}}
+
+Caller-approved additional official URLs:
+{{OFFICIAL_SOURCE_URLS}}

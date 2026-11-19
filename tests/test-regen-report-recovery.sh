@@ -104,7 +104,7 @@ details"
 
 run "${dir}" || fail "script failed: $(cat "${dir}/err")"
 closed="$(cat "${dir}/closed")"
-[[ "${closed}" == "1 Scheduled regeneration recovered: ${PREFIX}${CURRENT_RUN}" ]] ||
+[[ "${closed}" == "1 Regeneration and validation recovered: ${PREFIX}${CURRENT_RUN}" ]] ||
 	fail "only issue 1 should close, got: ${closed:-nothing}"
 
 # No open issues: nothing to do, still succeeds.
@@ -120,6 +120,22 @@ setup "${dir}"
 printf '[[%s]]' "$(issue 8 "${ISSUE_TITLE}" "${BOT}" "${FAILED}${PREFIX}${CURRENT_RUN}")" >"${dir}/issues.json"
 run "${dir}" || fail "equal run ID case failed"
 grep -q '^8 ' "${dir}/closed" || fail "issue reporting this run's ID should close"
+
+# Both report formats preserve newer failure comments.
+dir="${work_directory}/new-format"
+setup "${dir}"
+readonly NEW_FAILED='Regeneration or validation failed in this run: '
+printf '[[%s,%s]]' \
+	"$(issue 9 "${ISSUE_TITLE}" "${BOT}" "${NEW_FAILED}${PREFIX}400")" \
+	"$(issue 10 "${ISSUE_TITLE}" "${BOT}" "${FAILED}${PREFIX}400")" >"${dir}/issues.json"
+printf '[[%s]]' "$(comment "${BOT}" "${NEW_FAILED}${PREFIX}600")" >"${dir}/comments-10.json"
+run "${dir}" || fail "new report format failed"
+if [[ ! -s "${dir}/closed" ]] || ! grep -q '^9 ' "${dir}/closed"; then
+	fail "new report format must close"
+fi
+if [[ -s "${dir}/closed" ]] && grep -q '^10 ' "${dir}/closed"; then
+	fail "new-format comment reporting a newer failure must stay open"
+fi
 
 # Missing environment fails.
 if GH_BIN="${dir}/bin/gh" GH_REPO=o/r RUN_ID='' RUN_PREFIX="${PREFIX}" TITLE="${ISSUE_TITLE}" bash "${SCRIPT}" 2>/dev/null; then
