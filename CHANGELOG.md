@@ -4,6 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.57.1 (2026-11-20)
+
+- GitHub releases and ClawHub publication use separate concurrency groups from the calling pipeline. Each workflow still runs one publication at a time per repository and tag, including explicit tag inputs, without cancelling an active publication. Callers need no changes.
+
 ## v0.57.0 (2026-11-19)
 
 - Behavior change: regeneration runs now validate unchanged trees and route generation, lint, test and security failures into the existing three-attempt repair loop. An unchanged spec no longer skips configured checks. Callers need no changes unless they explicitly disabled repairs or omitted a check command.
