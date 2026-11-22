@@ -20,6 +20,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-release notes.
   - [go-workflow.yml](#go-workflowyml)
   - [python-package-workflow.yml](#python-package-workflowyml)
   - [code-workflow.yml](#code-workflowyml)
+  - [pages-workflow.yml](#pages-workflowyml)
   - [make-checks.yml](#make-checksyml)
   - [release-workflow.yml](#release-workflowyml)
   - [clawhub-publish.yml](#clawhub-publishyml)
@@ -55,6 +56,7 @@ Every workflow here holds to the same rules, so a caller inherits them for free:
 | [`go-workflow.yml`](#go-workflowyml) | Go lint / test / `govulncheck` + GitHub Release on tag. |
 | [`python-package-workflow.yml`](#python-package-workflowyml) | Python lint matrix / test / build / `pip-audit` + PyPI publish (token or OIDC) + GitHub Release on tag. |
 | [`code-workflow.yml`](#code-workflowyml) | Chain a repo's own build / lint / test / sec / generate commands (no toolchain setup), upload coverage + a security SARIF, check codegen drift. For projects whose toolchain lives in their container. |
+| [`pages-workflow.yml`](#pages-workflowyml) | Build a static documentation site with optional OpenAPI reference generation and publish it to GitHub Pages. |
 | [`make-checks.yml`](#make-checksyml) | Deprecated compatibility runner for container-backed `make lint` and `make test` checks. Use `code-workflow.yml` for new callers. |
 | [`release-workflow.yml`](#release-workflowyml) | Cut a GitHub release for a tag (tag + notes, no artifacts) via the gh CLI. |
 | [`clawhub-publish.yml`](#clawhub-publishyml) | Validate + publish skills and plugins to [ClawHub](https://clawhub.ai) via the official CLI. |
@@ -72,6 +74,45 @@ Reference the workflows at `@master`. Releases come often, and a pinned tag or S
 
 ```yaml
 uses: psyb0t/reusable-github-workflows/.github/workflows/go-workflow.yml@master
+```
+
+## pages-workflow.yml
+
+Builds the caller's static docs and publishes them with the official GitHub Pages actions. Pull requests build and validate the site. A push or manual run on the default branch can publish it. Set **Settings → Pages → Source** to **GitHub Actions** in the caller repository.
+
+### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `site_dir` | string | Required | Repository-relative output directory containing `index.html`. Use a dedicated build directory containing only public assets. Symlinks and hard links are rejected. |
+| `build_command` | string | `make docs-build` | Builds the static site from the repository root. Use `-` or an empty string to publish prebuilt output. |
+| `openapi_file` | string | Empty | Optional path to an existing OpenAPI `.json`, `.yaml` or `.yml` file in the checkout. Omit it for a site without a generated API reference. |
+| `openapi_command` | string | `make docs-openapi` | Runs before the site build when `openapi_file` is set. Reads its path from the `OPENAPI_FILE` environment variable. Use `-` or an empty string when the site build handles generation itself. |
+| `max_attempts` | number | `3` | Maximum attempts per command, including the first. Use `1` to turn retries off. |
+| `backoff_seconds` | number | `10` | Seconds before the first retry. The delay doubles on each retry. |
+
+The caller owns the generator and its pinned toolchain. For Docusaurus, have `docs-openapi` validate the supplied spec and generate the reference. Keep authored guides in `docs/` and have `docs-build` assemble them with the generated pages. For an existing build that already generates the reference, set `openapi_command: '-'` and have `docs-build` read `OPENAPI_FILE` directly.
+
+The workflow returns `page_url` after deployment. The build job gets `contents: read`. The deploy job alone gets `pages: write` and `id-token: write` and uses the `github-pages` environment. Grant all three scopes on the calling job. Keep build commands in the caller workflow and use `pull_request` for PR checks.
+
+### Example
+
+```yaml
+name: Documentation
+on: [push, pull_request, workflow_dispatch]
+
+permissions: {}
+
+jobs:
+  docs:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/pages-workflow.yml@master
+    with:
+      site_dir: website/build
+      openapi_file: docs/openapi.yaml
 ```
 
 ## collaborators-only-workflow.yml

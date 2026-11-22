@@ -1,0 +1,143 @@
+name: GitHub Pages
+
+on:
+  workflow_call:
+    inputs:
+      build_command:
+        description: "Build the static site from the repository root. Empty or '-' uses existing output."
+        type: string
+        default: "make docs-build"
+      site_dir:
+        description: "Repository-relative directory containing the finished site."
+        type: string
+        required: true
+      openapi_file:
+        description: "Existing repository-relative OpenAPI .json, .yaml or .yml file. Empty skips reference generation."
+        type: string
+        default: ""
+      openapi_command:
+        description: "Generate API reference pages using OPENAPI_FILE. Empty or '-' skips the command."
+        type: string
+        default: "make docs-openapi"
+      max_attempts:
+        description: "Attempts per command, including the first."
+        type: number
+        default: 3
+      backoff_seconds:
+        description: "Seconds before the first retry. The delay doubles on each retry."
+        type: number
+        default: 10
+    outputs:
+      page_url:
+        description: "Published site URL, when the site was deployed."
+        value: ${{ jobs.deploy.outputs.page_url }}
+
+permissions: {}
+
+concurrency:
+  group: pages-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.publish.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Build the site
+        id: site
+        shell: bash
+        env:
+          BUILD_COMMAND: ${{ inputs.build_command }}
+          SITE_DIR: ${{ inputs.site_dir }}
+          OPENAPI_FILE: ${{ inputs.openapi_file }}
+          OPENAPI_COMMAND: ${{ inputs.openapi_command }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          BACKOFF_SECONDS: ${{ inputs.backoff_seconds }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            printf '::error::%s\n' "$1" >&2
+            exit 1
+          }
+
+          run_with_retry() {
+            local label="$1" command="$2"
+            local attempt=1 delay="$BACKOFF_SECONDS" status
+            if [[ -z "$command" || "$command" == "-" ]]; then
+              return 0
+            fi
+            until bash -eo pipefail -c "$command"; do
+              status=$?
+              if (( attempt >= MAX_ATTEMPTS )); then
+                fail "$label failed after $attempt attempt(s), exit $status."
+              fi
+              printf '::warning::%s failed on attempt %s, retrying in %ss.\n' "$label" "$attempt" "$delay"
+              sleep "$delay"
+              delay=$((delay * 2))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || fail "max_attempts must be a positive integer."
+          [[ "$BACKOFF_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail "backoff_seconds must be a non-negative integer."
+          [[ -n "$SITE_DIR" && "$SITE_DIR" != /* && "$SITE_DIR" != *[[:cntrl:]]* ]] ||
+            fail "site_dir must be a repository-relative path."
+          workspace=$(pwd -P)
+          site=$(realpath -m -- "$SITE_DIR")
+          [[ "$site" == "$workspace/"* ]] || fail "site_dir must be inside the repository."
+
+          if [[ -n "$OPENAPI_FILE" ]]; then
+            case "$OPENAPI_FILE" in
+              *.json|*.yaml|*.yml) ;;
+              *) fail "openapi_file must end in .json, .yaml or .yml." ;;
+            esac
+            [[ "$OPENAPI_FILE" != /* && "$OPENAPI_FILE" != *[[:cntrl:]]* && -f "$OPENAPI_FILE" ]] ||
+              fail "openapi_file must be an existing repository-relative file."
+            spec=$(realpath -e -- "$OPENAPI_FILE")
+            [[ "$spec" == "$workspace/"* ]] || fail "openapi_file must resolve inside the repository."
+            run_with_retry "OpenAPI reference generation" "$OPENAPI_COMMAND"
+          fi
+          run_with_retry "Pages build" "$BUILD_COMMAND"
+
+          site=$(realpath -e -- "$SITE_DIR") || fail "site_dir was not built."
+          [[ "$site" == "$workspace/"* && -f "$site/index.html" && "$site" != *[[:cntrl:]]* ]] ||
+            fail "site_dir must contain index.html and resolve inside the repository."
+          unsafe_entry=$(find "$site" ! -type d \( ! -type f -o -links +1 \) -print -quit)
+          [[ -z "$unsafe_entry" ]] || fail "The Pages artifact must contain only directories and regular files without links."
+          printf 'path=%s\n' "$site" >> "$GITHUB_OUTPUT"
+
+      - name: Select publication
+        id: publish
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        run: printf 'enabled=true\n' >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: steps.publish.outputs.enabled == 'true'
+        with:
+          path: ${{ steps.site.outputs.path }}
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        id: pages
