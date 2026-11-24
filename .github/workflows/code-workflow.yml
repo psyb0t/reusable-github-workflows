@@ -66,6 +66,11 @@ on:
         required: false
         default: "code"
         type: string
+      sarif_required:
+        description: "Fail the job if a configured scan produces no report or GitHub rejects it."
+        required: false
+        default: false
+        type: boolean
       max_attempts:
         description: "Attempts per command before the step fails, including the first. Applies to build, lint, test, sec and the generator, so a runner network blip (a DNS failure during an image build, a registry timeout) is retried instead of failing the run. 1 turns retries off."
         required: false
@@ -240,6 +245,7 @@ jobs:
           retention-days: 1
 
       - name: Security scan
+        id: scan
         if: always() && steps.build.outcome != 'failure' && inputs.sec_command != '' && inputs.sec_command != '-'
         env:
           COMMAND: ${{ inputs.sec_command }}
@@ -248,17 +254,45 @@ jobs:
           source "${RUNNER_TEMP}/run-with-retry.sh"
           run_with_retry "Security scan" "${COMMAND}"
 
-      # Upload whatever SARIF the sec command wrote, even when it gated the build,
-      # so findings reach the Security tab either way. continue-on-error: the
-      # upload 403s if the caller did not grant security-events: write, and that
-      # must not fail an otherwise-green run.
+      - name: Validate SARIF categories
+        id: sarif
+        if: >-
+          ${{ !cancelled() && inputs.sarif_file != '' &&
+              (hashFiles(inputs.sarif_file) != '' ||
+               (inputs.sarif_required && (steps.scan.outcome == 'success' || steps.scan.outcome == 'failure'))) }}
+        continue-on-error: ${{ !inputs.sarif_required }}
+        env:
+          SARIF_FILE: ${{ inputs.sarif_file }}
+          SARIF_CATEGORY: ${{ inputs.sarif_category }}
+        run: |
+          set -euo pipefail
+          if [[ ! -s "${SARIF_FILE}" ]]; then
+            echo "::error::The security scan did not produce the configured SARIF report."
+            exit 1
+          fi
+          if ! jq -se --arg category "${SARIF_CATEGORY%/}" '
+            length == 1 and (.[0] |
+              .version == "2.1.0" and (.runs | type == "array" and length > 0) and
+              ([.runs[] | [
+                .tool.driver.name,
+                (if .automationDetails == null then $category
+                 else (.automationDetails.id // "" | split("/") | .[:-1] | join("/"))
+                 end)
+              ]] | length == (unique | length)))
+          ' < "${SARIF_FILE}" > /dev/null 2>&1; then
+            echo "::error::Expected one SARIF 2.1.0 report with a distinct category per run of each tool. Set runs[].automationDetails.id to category/run-id."
+            exit 1
+          fi
+
+      # Publish findings even when the scan fails the job.
       - name: Upload SARIF to the Security tab
-        if: always() && inputs.sarif_file != '' && hashFiles(inputs.sarif_file) != ''
-        continue-on-error: true
+        if: ${{ !cancelled() && steps.sarif.outcome == 'success' }}
+        continue-on-error: ${{ !inputs.sarif_required }}
         uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           sarif_file: ${{ inputs.sarif_file }}
           category: ${{ inputs.sarif_category }}
+          wait-for-processing: true
 
       # generate runs LAST because it rewrites the tree; earlier and lint/test
       # would see regenerated code instead of the committed code. The command

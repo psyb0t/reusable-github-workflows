@@ -676,7 +676,8 @@ Chains a repo's own build / lint / test / sec / generate commands. No language, 
 
 - Every `*_command` accepts `-` (preferred) or `""` to skip that step.
 - `build_command` runs FIRST and gates the rest: if it fails, lint / test / sec / generate are skipped, so the run fails fast on the real problem. Leave it empty and there is no gate (lint runs first).
-- `sec_command` should write a SARIF to `sarif_file`; the flow uploads it to Security > Code scanning under `sarif_category` (so a repo with both a Go and a Python leg does not overwrite itself). Needs `security-events: write` on the caller job.
+- `sec_command` should write a SARIF report to `sarif_file`. The workflow uploads it even when the scan finds issues. The caller needs `security-events: write`.
+- Each run of the same tool needs a distinct category. Set `runs[].automationDetails.id` to a stable category followed by `/`, for example `go/gitleaks-worktree/`. Runs without automation details use `sarif_category`. Set `sarif_required: true` to fail CI when the configured scan produces no report, validation fails, or GitHub rejects the upload.
 - `generate_command` just runs the generators; the flow then fails on `git status` drift. Ordered last because it rewrites the tree.
 - Set `coverage_file` and the file is uploaded as the artifact a downstream [`create-badges.yml`](#create-badgesyml) job reads.
 - Each command runs up to `max_attempts` times (default 5), waiting `backoff_seconds` before the second attempt and doubling the wait after each failure (30s, 60s, 120s, 240s by default). A runner network blip, such as a DNS failure while a test builds an image, is retried instead of failing the run and any tag release waiting on it. A real failure fails the step after the last attempt with its own exit code. The generate step retries only the generator; drift is checked once. Set `max_attempts: 1` to turn retries off.
@@ -696,6 +697,7 @@ Chains a repo's own build / lint / test / sec / generate commands. No language, 
 | `coverage_artifact` | string | `"coverage"` | Name of the uploaded coverage artifact. |
 | `sarif_file` | string | `""` | Path `sec_command` wrote SARIF to. If set, uploaded to the Security tab. |
 | `sarif_category` | string | `"code"` | Code-scanning category, so multiple legs in one repo do not collide. |
+| `sarif_required` | boolean | `false` | Fail CI on a missing report after a scan, invalid SARIF, or a rejected upload. |
 | `max_attempts` | number | `5` | Attempts per command, including the first. `1` turns retries off. |
 | `backoff_seconds` | number | `30` | Wait before the second attempt, doubling after each failure. |
 | `runs_on` | string | `"ubuntu-latest"` | Runner label. |

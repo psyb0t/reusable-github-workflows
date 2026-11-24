@@ -6,6 +6,8 @@ pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 
 ## Unreleased
 
+- Validate SARIF tool and category pairs before uploading code-scanning results. Set `sarif_required: true` to fail CI on a missing or rejected report. Repeated runs of the same tool need distinct categories.
+
 - Add `pages-workflow.yml` to build and publish static documentation. Callers can supply an existing JSON or YAML OpenAPI file to generate an API reference before the site build. Existing callers need no changes.
 
 ## v0.57.1 (2026-11-20)
