@@ -4,10 +4,10 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
-## Unreleased
+## v0.58.0 (2026-11-27)
 
+- Behavior change: `docker-image-workflow.yml` publishes from the default branch only on a `push` event. A scheduled or manual run there now skips the build, push and scan, so a weekly badge refresh can no longer rebuild `:latest` or overwrite the `sha-<commit>` tag a release promotes. Tags still publish from any event. Callers that already guard their docker job with `github.event_name == 'push'` see no change, and no caller needs to change anything.
 - Validate SARIF tool and category pairs before uploading code-scanning results. Set `sarif_required: true` to fail CI on a missing or rejected report. Repeated runs of the same tool need distinct categories.
-
 - Add `pages-workflow.yml` to build and publish static documentation. Callers can supply an existing JSON or YAML OpenAPI file to generate an API reference before the site build. Existing callers need no changes.
 
 ## v0.57.1 (2026-11-20)

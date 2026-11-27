@@ -259,7 +259,7 @@ Builds and pushes a multi-arch Docker image to Docker Hub.
 
 A successful scan logs `outcome=completed`. That confirms the scanner finished, not that the image has no vulnerabilities. Read the SARIF findings in the Security tab; report-only scans can complete successfully with findings.
 
-Trigger from `push` so it fires on branch and tag pushes. The workflow only acts on `refs/heads/main`, `refs/heads/master`, and `refs/tags/*`.
+Trigger from `push` so it fires on branch and tag pushes. The workflow only acts on `refs/heads/main` and `refs/heads/master` for a `push` event, and on `refs/tags/*` for any event. A scheduled or manual run on the default branch, such as a weekly badge refresh, builds and pushes nothing, so it cannot replace `:latest` or the `sha-<commit>` tag a release promotes. Other branches and pull requests build nothing either.
 
 **The Docker Hub page is kept in step with the GitHub one.** Three things drift otherwise, and all three are invisible until someone lands on the Docker Hub page and finds nothing useful:
 

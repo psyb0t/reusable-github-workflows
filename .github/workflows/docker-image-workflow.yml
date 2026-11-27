@@ -156,8 +156,12 @@ jobs:
   # Single image (default, backwards compatible)
   # ══════════════════════════════════════════════
 
+  # The default branch publishes only from a push. A scheduled or manual run on
+  # it would rebuild :latest from an unchanged commit and overwrite the
+  # sha-<commit> tag that a release promotes, so those runs skip the image.
+  # Tags publish from any event, so a release can be run again by hand.
   build:
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets == ''
+    if: ((github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')) || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets == ''
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
@@ -432,7 +436,8 @@ jobs:
   # behavior. Set "stage": 1 on an image that does `FROM <repo>:latest` so it
   # inherits the freshly-pushed base instead of the previously-published one.
   plan-multi:
-    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
+    # Same publishing rule as the single-image build job above.
+    if: ((github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')) || startsWith(github.ref, 'refs/tags/')) && inputs.build_targets != ''
     runs-on: ${{ inputs.runs_on }}
     permissions:
       contents: read
