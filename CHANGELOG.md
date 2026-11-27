@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking input/behavior changes
 (called out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.59.0 (2026-11-27)
+
+- Add `pin_images` to `clawhub-publish.yml`. On a tag publish it rewrites bare and `:latest` references to the listed Docker Hub images in the published skill files to `image:TAG@sha256:...`, so ClawHub's scanners and installers see an exact image instead of a mutable one. The repository keeps its references. The default `[]` changes nothing for existing callers.
+- Add `pin_source_urls` to `clawhub-publish.yml`. On a tag publish it rewrites raw GitHub URLs of the calling repository on `main`, `master` or `HEAD` in the published skill files to the release tag. Off by default.
+
 ## v0.58.0 (2026-11-27)
 
 - Behavior change: `docker-image-workflow.yml` publishes from the default branch only on a `push` event. A scheduled or manual run there now skips the build, push and scan, so a weekly badge refresh can no longer rebuild `:latest` or overwrite the `sha-<commit>` tag a release promotes. Tags still publish from any event. Callers that already guard their docker job with `github.event_name == 'push'` see no change, and no caller needs to change anything.

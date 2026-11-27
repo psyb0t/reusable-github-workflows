@@ -120,6 +120,18 @@ on:
         type: string
         default: ""
 
+      pin_images:
+        description: 'JSON array of the Docker Hub images the skills document, such as ["psyb0t/assctl"]. On a tag publish, every bare or :latest reference to one of them in the selected skills becomes image:TAG@sha256:..., resolved from Docker Hub, so the published skill names an exact image. The repository files keep their references. The image must already be pushed for the tag. Empty array = no pinning.'
+        required: false
+        type: string
+        default: "[]"
+
+      pin_source_urls:
+        description: "On a tag publish, rewrite raw GitHub URLs of this repository on main, master or HEAD in the selected skills to the release tag, so a linked install script is the released one. The repository files keep their URLs."
+        required: false
+        type: boolean
+        default: false
+
       cli_version:
         description: "EXACT clawhub CLI version to install (no ranges). Bump consciously; the age-gate re-checks on bump."
         required: false
@@ -376,6 +388,44 @@ jobs:
             exit 1
           fi
           echo "installed: $(clawhub --version 2>/dev/null || echo "clawhub@${CLI_VERSION}")"
+
+      - name: Checkout reusable workflow tools
+        if: ${{ (inputs.pin_images != '[]' && inputs.pin_images != '') || inputs.pin_source_urls }}
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: psyb0t/reusable-github-workflows
+          ref: master
+          path: reusable-workflow-tools
+          sparse-checkout: scripts
+
+      # The published copy names exact images, so a reviewer and an installer
+      # see the same image the release pushed. Only the runner's checkout
+      # changes; the repository keeps its references.
+      - name: Pin documented Docker images and source URLs
+        if: ${{ (inputs.pin_images != '[]' && inputs.pin_images != '') || inputs.pin_source_urls }}
+        env:
+          PIN_IMAGES: ${{ inputs.pin_images }}
+          SKILLS_DIR: ${{ inputs.skills_dir }}
+          SKILL_NAMES: ${{ inputs.skill_names }}
+          RELEASE_TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          SOURCE_REPO: ${{ inputs.pin_source_urls && github.repository || '' }}
+        run: |
+          set -euo pipefail
+          dirs=()
+          if [ -n "${SKILL_NAMES:-}" ] && [ "$(jq length <<<"$SKILL_NAMES")" -gt 0 ]; then
+            while IFS= read -r name; do
+              dirs+=("$SKILLS_DIR/$name")
+            done < <(jq -r '.[]' <<<"$SKILL_NAMES")
+          else
+            while IFS= read -r -d '' md; do
+              dirs+=("$(dirname "$md")")
+            done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -iname "SKILL.md" -print0 | sort -z)
+          fi
+          if [ "${#dirs[@]}" -eq 0 ]; then
+            echo "no skills to pin"
+            exit 0
+          fi
+          bash reusable-workflow-tools/scripts/pin-skill-images.sh "$RELEASE_TAG" "${PIN_IMAGES:-[]}" "${dirs[@]}"
 
       - name: Publish skills to ClawHub
         env:

@@ -812,6 +812,8 @@ Set `skill_names` or `plugin_names` to a JSON array of exact subfolder names to 
 | `tags` | string | `"latest"` | Comma-separated ClawHub tags applied to the published version. |
 | `owner` | string | `""` | Publisher handle to publish under (org-scoped). Empty = infer from the token. |
 | `version` | string | `""` | Explicit ClawHub version (semver). Empty = mirror the git tag when it's higher than ClawHub's current version, else auto patch-bump, stepping past version numbers that are already taken. |
+| `pin_images` | string | `"[]"` | JSON array of Docker Hub images the skills document, such as `["psyb0t/assctl"]`. On a tag publish, each bare or `:latest` reference becomes `image:TAG@sha256:...` in the published copy, with the digest Docker Hub reports for the tag. URLs, longer names and references that already carry a tag or digest are left alone. The image must be pushed for the tag before this job runs. |
+| `pin_source_urls` | boolean | `false` | On a tag publish, rewrite raw GitHub URLs of the calling repository on `main`, `master` or `HEAD` in the published skill files to the release tag, so a linked install script is the released one. |
 | `cli_version` | string | `"0.23.1"` | Exact `clawhub` CLI version to install (no ranges). |
 | `node_version` | string | `"22"` | Node.js major version (the CLI requires ≥22). |
 | `min_release_age_days` | number | `7` | Refuse to install a CLI version published more recently than this. |
